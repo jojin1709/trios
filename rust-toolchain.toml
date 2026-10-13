@@ -1,0 +1,11 @@
+# TriOS pins the nightly toolchain because the `bootloader` crate's build script
+# invokes cargo with `-Zbuild-std` (nightly-only), and the kernel uses the
+# `x86-interrupt` ABI + `alloc_error_handler` language items.
+#
+# rustup reads this file automatically: `cargo build` inside D:\trios uses this
+# toolchain, and installs it (plus components/targets) if missing.
+[toolchain]
+channel = "nightly"
+profile = "minimal"
+components = ["llvm-tools-preview", "rust-src", "rustfmt", "clippy"]
+targets = ["x86_64-unknown-none", "x86_64-unknown-uefi"]

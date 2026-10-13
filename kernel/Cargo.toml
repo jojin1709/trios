@@ -1,0 +1,32 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2024"
+description = "TriOS kernel — no_std, no_main, x86_64"
+license = "MIT"
+
+[dependencies]
+# Entry point, BootInfo and BootloaderConfig (must stay version-aligned with
+# the `bootloader` build-dependency of the root crate — cargo unifies them).
+bootloader_api = "0.11"
+# GDT/IDT/TSS/paging structures, Port I/O, CPU control registers.
+x86_64 = "0.15.2"
+# COM1 (0x3F8) serial driver — primary debug channel visible on the host.
+uart_16550 = "0.8"
+# Dual 8259 PIC: vector remap, masking, end-of-interrupt.
+pic8259 = "0.11"
+# Kernel heap: intrusive free-list allocator behind a spin lock.
+linked_list_allocator = "0.10"
+# Lazy runtime-initialized statics (GDT, IDT, TSS, serial port).
+lazy_static = { version = "1.5", features = ["spin_no_std"] }
+# Const-initializable spin mutexes (PIC state).
+spin = "0.9"
+# 8x8 bitmap font for the Phase 2 text renderer (graphics/font.rs).
+# The glyph tables are public-domain data (ported from dhepper/font8x8);
+# the crate wrapper is MIT. `default-features = false` matters: the crate's
+# defaults pull in `std`, which cannot link into a no_std kernel. The
+# `legacy::BASIC_LEGACY` table (ASCII 0x00..0x80) needs no features at all.
+font8x8 = { version = "0.3", default-features = false }
+
+# The kernel profile: thin the panic strategy is fixed by x86_64-unknown-none
+# (panic=abort, no red zone, no SSE).

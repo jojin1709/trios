@@ -1,0 +1,6 @@
+# Enables cargo's unstable "artifact dependencies" (bindeps): the workspace root
+# crate depends on the `kernel` binary crate compiled for `x86_64-unknown-none`,
+# so a plain `cargo build` produces both the kernel ELF and the bootable image.
+# Nightly-only, hence the pin in ../rust-toolchain.toml.
+[unstable]
+bindeps = true

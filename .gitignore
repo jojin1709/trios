@@ -1,0 +1,30 @@
+# Build artifacts
+/target/
+
+# Serial console captures (run-*.ps1 / VirtualBox / QEMU)
+/serial*.log
+*.log
+
+# OVMF VARS scratch copies (run-qemu.ps1)
+/ovmf-vars*.fd
+*.fd
+
+# VirtualBox scratch home used by verification runs (run-virtualbox.ps1 -UseLocalHome)
+/.vbox-home/
+
+# Disk images / boot media (build outputs)
+*.vdi
+*.vmdk
+*.iso
+*.img
+*.qcow2
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE / tooling
+.idea/
+.vscode/
+*.swp
