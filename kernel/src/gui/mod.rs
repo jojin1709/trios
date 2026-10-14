@@ -6,7 +6,8 @@
 //! theme.rs    colors (one table, no hex literals elsewhere)
 //! widgets.rs  Label/Button/Panel/ProgressBar/Slider — draw + pointer
 //! wm.rs       Window, WindowManager, Rect — z-order, chrome, drag/resize,
-//!             hit-testing, composition (desktop -> windows -> cursor)
+//!             hit-testing, composition (desktop -> windows -> hint bar
+//!             -> cursor)
 //! ```
 //!
 //! Upper layers (main.rs) only ever say `gui::Theme`, `gui::WindowManager`

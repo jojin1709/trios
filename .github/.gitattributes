@@ -1,0 +1,4 @@
+# CI files must be LF on every checkout — a Windows checkout with
+# core.autocrlf=true would otherwise commit CRLF bash scripts that the
+# Linux runner cannot execute.
+* text=auto eol=lf

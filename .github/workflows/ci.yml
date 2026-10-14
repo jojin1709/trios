@@ -1,0 +1,86 @@
+name: Build & Boot TriOS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One boot report per commit on main: a newer push cancels an in-flight run.
+concurrency:
+  group: trios-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Required to force-push the `ci-screenshots` branch that the job summary
+# embeds its inline boot screenshots from.
+permissions:
+  contents: write
+
+jobs:
+  build-and-boot:
+    name: Build image & boot in QEMU
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install QEMU, OVMF and capture tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 ovmf socat imagemagick
+
+      # rust-toolchain.toml pins nightly (bindeps + x86-interrupt ABI need it)
+      # plus rust-src and the x86_64-unknown-none / x86_64-unknown-uefi targets;
+      # the rustup proxy installs them from that file on first `cargo` use.
+      # The explicit adds below are idempotent and guard against rustup quirks.
+      - name: Install pinned Rust toolchain (from rust-toolchain.toml)
+        run: |
+          cargo --version
+          rustc --version
+          rustup component add rust-src llvm-tools-preview
+          rustup target add x86_64-unknown-none x86_64-unknown-uefi
+
+      # Caches ~/.cargo/registry, ~/.cargo/git and target/ (rust-cache keys on
+      # Cargo.lock + toolchain). The kernel artifact-dep output lives in
+      # target/release too, so the whole target dir is worth caching.
+      - name: Cache cargo registry and target/
+        uses: Swatinem/rust-cache@v2
+
+      # Produces target/release/trios-uefi-release.img (see build.rs).
+      - name: Build bootable UEFI disk image
+        run: cargo build --release --locked
+
+      - name: Check disk image
+        run: ls -lh target/release/trios-uefi-release.img
+
+      # Boots headless with OVMF UEFI firmware: COM1 serial -> file, timed
+      # `screendump`s of the VGA framebuffer driven over the QEMU monitor
+      # socket. No KVM on hosted runners, so this is TCG (slow): screenshots
+      # at ~3/8/15/30 s, then QEMU is killed. Hard `timeout` guards the step.
+      - name: Boot in QEMU, capture serial + screenshots
+        run: timeout 180 bash .github/scripts/boot-and-capture.sh target/release/trios-uefi-release.img boot-artifacts
+
+      - name: Upload image, serial log and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trios-boot-${{ github.run_number }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            target/release/trios-uefi-release.img
+            boot-artifacts/serial.log
+            boot-artifacts/*.png
+
+      # Force-pushes the PNGs to the `ci-screenshots` branch (overwrite each
+      # run) so the job summary can embed them via raw.githubusercontent.com,
+      # then writes $GITHUB_STEP_SUMMARY: inline screenshots + serial log tail.
+      - name: Publish screenshots and write job summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/publish-and-summarize.sh boot-artifacts

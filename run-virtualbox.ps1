@@ -30,12 +30,10 @@
     implements PS/2 (ports 0x60/0x64, IRQ1 + IRQ12); VirtualBox 7 defaults
     OSType=Other_64 to USB Tablet/USB Keyboard (HID), which the guest cannot
     drive. Forcing PS/2 makes host input reach the kernel's PS/2 drivers.
-    After startvm the script also runs 'controlvm mouseintegration off':
-    VirtualBox 7 keeps Mouse Integration ON by default, which without Guest
-    Additions shows the *host* cursor and swallows relative PS/2 motion —
-    the guest never sees IRQ12 packets. Turning it off restores classic
-    capture (click inside the window -> host cursor hides -> guest gets
-    relative motion + button packets).
+    PS/2 mouse always uses capture mode: click inside the VM window once to
+    hide the host cursor and let the guest receive relative motion packets
+    via IRQ12. (There is no 'mouseintegration' VBoxManage subcommand — an
+    earlier attempt to run 'controlvm mouseintegration off' failed silently.)
 
 .EXAMPLE
   .\run-virtualbox.ps1
@@ -154,15 +152,14 @@ if ($Gui) {
     & $VBoxManage startvm $VmName --type gui
     if ($LASTEXITCODE -ne 0) { throw "startvm failed" }
 
-    # Mouse Integration ON (the VirtualBox 7 default) shows the *host*
-    # cursor and swallows relative PS/2 motion unless Guest Additions are
-    # installed — which a hobby OS never has. 'controlvm mouseintegration
-    # off' (a runtime command; modifyvm cannot do this) forces classic
-    # capture: click inside the window -> host cursor hides -> the guest
-    # receives relative motion + button packets via IRQ12. Ignore failures
-    # so a VBox build without the flag still boots (controlvm requires a
-    # running VM, hence only after startvm).
-    try { & $VBoxManage controlvm $VmName mouseintegration off 2>$null | Out-Null } catch {}
+    # NOTE: 'controlvm mouseintegration off' was REMOVED — it is NOT a valid
+    # VBoxManage 7.2 subcommand (only keyboardputscancode, poweroff, etc.
+    # exist). It failed silently inside try/catch on every run. With
+    # --mouse=ps2 (set in modifyvm above), mouse integration does not apply
+    # (that concept is for USB-tablet devices). PS/2 always uses capture
+    # mode: the user clicks inside the VM window once -> host cursor hides
+    # -> the guest receives relative motion + button packets via IRQ12.
+    Write-Host "GUI mode: click inside the VM window once to capture mouse/keyboard."
 
     $Start = Get-Date
     while ($true) {
@@ -188,11 +185,8 @@ if ($Gui) {
     & $VBoxManage startvm $VmName --type headless
     if ($LASTEXITCODE -ne 0) { throw "startvm failed" }
 
-    # Same as the GUI branch: force classic PS/2 mouse capture. On a
-    # headless VM this is harmless (no window, no host cursor), but keeps
-    # both boot paths identical — and would apply if the VM is later
-    # shown via 'controlvm showvminfo' / the VirtualBox Manager.
-    try { & $VBoxManage controlvm $VmName mouseintegration off 2>$null | Out-Null } catch {}
+    # (headless: no phantom 'controlvm mouseintegration off' — not a valid
+    # subcommand. See the note in the GUI branch above.)
 
     Start-Sleep -Seconds $Seconds
 

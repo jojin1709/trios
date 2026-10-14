@@ -26,10 +26,13 @@
 //!
 //! ### The cursor draws last
 //!
-//! [`compose`] paints desktop → windows → **cursor**, always. The cursor
-//! is decoration *over* the scene, never part of it: windows under it
-//! are composited untouched, and no save/restore buffer is needed
-//! because every frame is rebuilt from scratch before `flush`.
+//! [`compose`] paints desktop → windows → hint bar → **cursor**, always.
+//! The cursor is decoration *over* the scene, never part of it: windows
+//! under it are composited untouched, and no save/restore buffer is
+//! needed because every frame is rebuilt from scratch before `flush`.
+//! The hint bar sits between windows and cursor for the same reason the
+//! cursor does: it is OS chrome painted on top every frame, not a window
+//! (it can't be focused, dragged, hit-tested or closed).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -527,14 +530,15 @@ impl WindowManager {
     // -- composition -------------------------------------------------------
 
     /// Paints the whole desktop into the backbuffer: background, every
-    /// window bottom→top (chrome, then widgets), then the cursor last.
-    /// The caller flushes — double-buffering means nothing here is
-    /// visible until then.
+    /// window bottom→top (chrome, then widgets), the always-on-top input
+    /// hint bar, then the cursor last. The caller flushes —
+    /// double-buffering means nothing here is visible until then.
     pub fn compose(&self, g: &mut Graphics, theme: &Theme) {
         g.clear(theme.bg);
         for win in &self.windows {
             Self::draw_window(g, theme, win);
         }
+        draw_hint_bar(g, theme);
         draw_cursor(g, self.cursor);
     }
 
@@ -611,6 +615,74 @@ impl WindowManager {
             theme.border
         };
         g.draw_rect(r.x, r.y, r.w as u32, r.h as u32, border);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The input-capture hint bar
+// ---------------------------------------------------------------------------
+
+/// Font scale for the hint bar's text (1 => 8 px cells).
+///
+/// The message is one 82-char line, so at scale 1
+/// [`Graphics::text_width`] reports 82 × 8 = **656 px** — well inside the
+/// 1024 px framebuffer (184 px of margin on each side). Scale 2 would be
+/// 82 × 16 = **1312 px > 1024**, i.e. it would run off the right edge;
+/// scale 1 is therefore the largest integer scale that fits (see
+/// [`HINT_LINES`]).
+const HINT_SCALE: u32 = 1;
+/// Vertical padding above/below the text inside the bar.
+const HINT_PAD: i32 = 6;
+/// The message: a single centered line (the old two-line version overflowed
+/// the 1024 px framebuffer).
+///
+/// ASCII-only, 82 chars → 82 × 8 = **656 px** at [`HINT_SCALE`], so it
+/// centers with ~184 px to spare on each side. The draw code still clamps
+/// `x ≥ 0` and every primitive clips, so a narrower screen degrades by
+/// trimming the right edge rather than wrapping or panicking.
+const HINT_LINES: [&str; 1] =
+    ["Click here to capture input | Right Ctrl = release | Arrows = move | Space = click"];
+/// One text line's height in pixels at [`HINT_SCALE`] (8 × 1 = 8 px).
+const HINT_LINE_H: i32 = crate::graphics::font::GLYPH_H as i32 * HINT_SCALE as i32;
+/// Total bar height: padding + exactly one line (6 + 8 + 6) = **20 px**
+/// (was 44 px when the message spanned two lines at scale 2).
+const HINT_BAR_H: i32 = HINT_PAD * 2 + HINT_LINE_H * HINT_LINES.len() as i32;
+
+/// Draws the always-visible input-capture hint bar, pinned to the bottom
+/// of the screen.
+///
+/// One centered line inside a [`HINT_BAR_H`]-tall strip, so the whole bar
+/// occupies only the bottom 20 px of the framebuffer.
+///
+/// Why this exists: VirtualBox starts **uncaptured** — the host cursor
+/// is shown and keystrokes go to Windows until the user clicks inside
+/// the VM window once (that's when "Auto capture keyboard" engages).
+/// The guest cannot detect that host-side state, so instead of guessing
+/// it says out loud, on every frame, exactly what to do. It deliberately
+/// never times out: a user who looked away needs the same message when
+/// they look back.
+///
+/// Drawn *after* the windows (always on top, like a taskbar/status strip)
+/// and *before* the cursor (so the pointer stays visible over it). It is
+/// decoration only: [`WindowManager::handle_mouse`] never knows it's
+/// there, so a press landing on it falls through to whatever window is
+/// beneath — which is also why it never blocks clicks on the desktop.
+fn draw_hint_bar(g: &mut Graphics, theme: &Theme) {
+    let w = g.width() as i32;
+    let h = g.height() as i32;
+    let y = h - HINT_BAR_H;
+
+    // Accent strip + a bright 1-px rule on its top edge, so the bar reads
+    // as chrome laid over the desktop rather than another window border.
+    // (Negative `y` on a screen shorter than the bar simply clips — every
+    // primitive clips — so no degenerate-geometry special case is needed.)
+    g.fill_rect(0, y, w as u32, HINT_BAR_H as u32, theme.accent);
+    g.fill_rect(0, y, w as u32, 1, theme.text_primary);
+
+    for (i, line) in HINT_LINES.iter().enumerate() {
+        let x = ((w - Graphics::text_width(line, HINT_SCALE)) / 2).max(0);
+        let ty = y + HINT_PAD + i as i32 * HINT_LINE_H;
+        g.draw_text(x, ty, line, theme.text_primary, None, HINT_SCALE);
     }
 }
 
