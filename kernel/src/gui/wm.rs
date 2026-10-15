@@ -8,6 +8,9 @@
 //! press is doing ([`Drag`]: moving a window, resizing it, or driving a
 //! widget). That state machine is the subtle part of any WM, so it lives
 //! in one place with the event order spelled out in [`handle_mouse`].
+//! Keyboard events (Phase 4) route to the focused window, and inside it
+//! to its `focused_widget` — a text field — before the window-level
+//! Esc-closes shortcut.
 //!
 //! ### Coordinates
 //!
@@ -26,13 +29,17 @@
 //!
 //! ### The cursor draws last
 //!
-//! [`compose`] paints desktop → windows → hint bar → **cursor**, always.
+//! [`compose`] paints desktop → windows → hint bar → taskbar → **cursor**,
+//! always.
 //! The cursor is decoration *over* the scene, never part of it: windows
 //! under it are composited untouched, and no save/restore buffer is
 //! needed because every frame is rebuilt from scratch before `flush`.
-//! The hint bar sits between windows and cursor for the same reason the
-//! cursor does: it is OS chrome painted on top every frame, not a window
-//! (it can't be focused, dragged, hit-tested or closed).
+//! The hint bar and the taskbar sit between windows and cursor for the
+//! same reason the cursor does: they are OS chrome painted on top every
+//! frame, not windows (they can't be focused or dragged, and only the
+//! taskbar's three buttons are hit-tested — see [`taskbar_click`]).
+//!
+//! [`taskbar_click`]: WindowManager::taskbar_click
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -111,6 +118,12 @@ pub struct Window {
     pub focused: bool,
     /// Widget list in *window-local* coordinates.
     pub widgets: Vec<Widget>,
+    /// Index into `widgets` of the widget receiving keys (Phase 4: a
+    /// `TextInput`). Independent of `focused`: a background window keeps
+    /// its field selection for when it regains focus, but only the
+    /// focused window ever *receives* keys (see
+    /// [`WindowManager::handle_key`]).
+    pub focused_widget: Option<usize>,
     /// Set when the user hit X (or Esc) — [`WindowManager::reap`] closes it.
     pub close_requested: bool,
 }
@@ -138,11 +151,35 @@ impl Window {
     }
 
     /// Keyboard routing target (see [`WindowManager::handle_key`]).
+    ///
+    /// A focused [`TextInput`](super::widgets::TextInput) (index in
+    /// [`Self::focused_widget`]) gets first refusal: if it changed the
+    /// value or caret, the key is consumed and done. Esc is the one key
+    /// every window still sees — the text field never consumes it (see
+    /// `TextInput::handle_key`), so "Esc closes" keeps working even while
+    /// you're typing, exactly like a real WM.
     pub fn handle_key(&mut self, ev: input::KeyEvent) {
-        // Phase 3: only Esc, and only as a close shortcut. Real text
-        // input lands here in Phase 5 (per-window focus + input field).
+        if let Some(i) = self.focused_widget
+            && let Some(Widget::TextInput(t)) = self.widgets.get_mut(i)
+            && t.handle_key(ev)
+        {
+            return;
+        }
         if ev.pressed && ev.code == input::KeyCode::Esc {
             self.close_requested = true;
+        }
+    }
+}
+
+/// Mirrors a window's keyboard-focus state onto its text fields: only a
+/// `TextInput` at `focused_widget` inside the *focused* window draws a
+/// caret. Called everywhere `focused` or `focused_widget` changes — one
+/// tiny loop over a handful of widgets, so brute-force syncing beats
+/// bookkeeping flags that can silently drift apart.
+fn sync_text_focus(win: &mut Window) {
+    for (i, wg) in win.widgets.iter_mut().enumerate() {
+        if let Widget::TextInput(t) = wg {
+            t.focused = win.focused && win.focused_widget == Some(i);
         }
     }
 }
@@ -185,6 +222,22 @@ enum Zone {
     Body,
 }
 
+/// The windows behind the taskbar's three buttons, in **button order**
+/// (left to right: Files, Editor, Terminal).
+///
+/// A plain named struct rather than a bare `(u64, u64, u64)`: the whole
+/// point of this type is that [`taskbar_click`]'s `match` on the button
+/// index can't silently swap two ids — the field names say which app each
+/// slot is, at both the write end (`main.rs`) and the read end.
+///
+/// [`taskbar_click`]: WindowManager::taskbar_click
+#[derive(Debug, Clone, Copy)]
+struct TaskbarTargets {
+    files: u64,
+    editor: u64,
+    terminal: u64,
+}
+
 /// The compositor + interaction state machine.
 pub struct WindowManager {
     /// Windows, **sorted ascending by z** (invariant — see module docs).
@@ -206,6 +259,14 @@ pub struct WindowManager {
     prev_buttons: input::MouseButtons,
     /// The active interaction, if any.
     drag: Drag,
+    /// Which windows the three taskbar buttons focus, in button order
+    /// (Files, Editor, Terminal). `None` until `main.rs` calls
+    /// [`set_taskbar_targets`](Self::set_taskbar_targets) — the WM creates
+    /// windows for whoever asks and has no idea which ids belong to the
+    /// shell's apps, so it must not guess; an unwired taskbar draws its
+    /// buttons but every click reports `None` (see
+    /// [`taskbar_click`](Self::taskbar_click)).
+    taskbar_targets: Option<TaskbarTargets>,
 }
 
 impl WindowManager {
@@ -223,6 +284,7 @@ impl WindowManager {
             cursor: mouse::position(),
             prev_buttons: input::MouseButtons::default(),
             drag: Drag::None,
+            taskbar_targets: None,
         }
     }
 
@@ -260,6 +322,7 @@ impl WindowManager {
             z,
             focused: false,
             widgets: Vec::new(),
+            focused_widget: None,
             close_requested: false,
         });
         id
@@ -267,10 +330,25 @@ impl WindowManager {
 
     /// Brings `id` to the top of the stack and makes it the sole focused
     /// window. (Every window you click gets raised — standard behaviour.)
+    /// Each window keeps its `focused_widget` across focus changes; only
+    /// the caret *drawing* follows (via [`sync_text_focus`]), so clicking
+    /// away and back restores the field selection.
+    ///
+    /// Unknown ids are a **no-op**. Two of this cycle's callers resolve
+    /// ids that are only valid *sometimes*: the taskbar buttons and the
+    /// `Ctrl+1/2/3` hotkeys target the shell's app windows, which the
+    /// user can dismiss with Esc or X at any moment. Writing
+    /// `focused_id = <dead id>` would point the keyboard at a window that
+    /// is no longer drawn (and make `Apps::owns_focus` claim keys for it),
+    /// so the honest answer is to keep the current focus untouched.
     pub fn focus(&mut self, id: u64) {
+        if !self.windows.iter().any(|w| w.id == id) {
+            return;
+        }
         let z = self.take_z();
         for w in &mut self.windows {
             w.focused = w.id == id;
+            sync_text_focus(w);
         }
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
             w.z = z;
@@ -338,6 +416,152 @@ impl WindowManager {
         self.windows.get_mut(i)
     }
 
+    /// Gives keyboard focus to a widget inside a window (Phase 4: a
+    /// freshly opened dialog wants its text field live on appear).
+    /// Bounds-checked — a stale index is a no-op, never a panic.
+    // Mouse clicks set `focused_widget` inside `handle_mouse`; this is
+    // the *programmatic* path for next cycle's Phase 4 apps (open a
+    // dialog, focus its field), which is why the binary crate's
+    // dead-code lint is silenced here — same reasoning as `fs::mod`.
+    #[allow(dead_code)]
+    pub fn focus_widget(&mut self, window_id: u64, index: usize) {
+        if let Some(w) = self.window_mut(window_id)
+            && index < w.widgets.len()
+        {
+            w.focused_widget = Some(index);
+            sync_text_focus(w);
+        }
+    }
+
+    /// Clears a window's focused widget (the demo text field treats
+    /// Enter as "commit and release"; the next key falls back to
+    /// window-level handling).
+    pub fn clear_widget_focus(&mut self, window_id: u64) {
+        if let Some(w) = self.window_mut(window_id) {
+            w.focused_widget = None;
+            sync_text_focus(w);
+        }
+    }
+
+    /// The id of the currently focused window, if any.
+    ///
+    /// The Phase 4 shell (`apps::Apps::owns_focus`) asks this before it
+    /// takes a key press: ids are stable for a window's lifetime, so the
+    /// answer is just the bookkeeping [`focus`] writes — no lookup, no
+    /// allocation. `None` means nothing is focused (every window closed
+    /// or none created yet).
+    ///
+    /// [`focus`]: WindowManager::focus
+    pub fn focused_window(&self) -> Option<u64> {
+        self.focused_id
+    }
+
+    /// Does the *focused* window currently route keys to a text field?
+    /// The main loop gates the keyboard-cursor fallback on this, so
+    /// arrow keys move the caret (not the mouse) while typing.
+    pub fn has_text_focus(&self) -> bool {
+        let Some(id) = self.focused_id else {
+            return false;
+        };
+        let Some(w) = self.windows.iter().find(|w| w.id == id) else {
+            return false;
+        };
+        matches!(
+            w.focused_widget.and_then(|i| w.widgets.get(i)),
+            Some(Widget::TextInput(_))
+        )
+    }
+
+    /// Reads a text field's current value (`None` if the window/widget is
+    /// gone or isn't a `TextInput`) — lets the main loop diff before/after
+    /// a key without reaching into widget internals.
+    pub fn text_value(&self, window_id: u64, index: usize) -> Option<String> {
+        self.windows
+            .iter()
+            .find(|w| w.id == window_id)
+            .and_then(|w| w.widgets.get(index))
+            .and_then(|wg| match wg {
+                Widget::TextInput(t) => Some(t.value.clone()),
+                _ => None,
+            })
+    }
+
+    // -- taskbar -----------------------------------------------------------
+
+    /// Wires the three taskbar buttons to their windows, **in button
+    /// order**: Files, Editor, Terminal (left to right).
+    ///
+    /// Why the indirection: the taskbar lives in this WM (it owns the
+    /// screen chrome), but which window is "Files" is the shell's
+    /// business, and the ids only exist after `main.rs` builds the apps.
+    /// The WM would otherwise have to *search windows by title* — string
+    /// matching that breaks the moment a title is edited or a second
+    /// "Terminal" is opened. Handing over three ids costs nothing and
+    /// keeps the dependency pointing one way (main knows the WM; the WM
+    /// knows nothing about `apps`).
+    ///
+    /// Called exactly once from `desktop_run` right after
+    /// [`crate::apps::Apps::new`]. Until then the buttons draw but
+    /// [`taskbar_click`] answers `None`.
+    ///
+    /// [`taskbar_click`]: Self::taskbar_click
+    pub fn set_taskbar_targets(&mut self, files: u64, editor: u64, terminal: u64) {
+        self.taskbar_targets = Some(TaskbarTargets {
+            files,
+            editor,
+            terminal,
+        });
+    }
+
+    /// Which taskbar button sits at `(x, y)`? The window id to focus, or
+    /// `None` — point off every button, *or* targets never wired (see
+    /// [`set_taskbar_targets`]), *or* the button's window no longer
+    /// exists (the user can Esc/X an app away; focusing a dead id would
+    /// poison `focused_id`, see [`focus`], so the click simply does
+    /// nothing).
+    ///
+    /// Pure hit-testing — no state is touched, which is what lets
+    /// [`handle_mouse`] call it before *any* window is considered and
+    /// decide who owns the press from its answer alone. The rects come
+    /// from [`taskbar_button_rects`], the same function `draw_taskbar`
+    /// paints from, so the visible buttons and the clickable ones cannot
+    /// drift apart.
+    ///
+    /// [`set_taskbar_targets`]: Self::set_taskbar_targets
+    /// [`focus`]: Self::focus
+    pub fn taskbar_click(&self, x: i32, y: i32) -> Option<u64> {
+        let targets = self.taskbar_targets?;
+        let idx = taskbar_button_rects(self.screen_h)
+            .iter()
+            .position(|r| r.contains(x, y))?;
+        let id = match idx {
+            0 => targets.files,
+            1 => targets.editor,
+            _ => targets.terminal,
+        };
+        self.windows.iter().any(|w| w.id == id).then_some(id)
+    }
+
+    /// The taskbar's band in global coords: the `TASKBAR_H` rows directly
+    /// above the [`HINT_BAR_H`] hint bar (`screen_h - HINT_BAR_H -
+    /// TASKBAR_H .. screen_h - HINT_BAR_H`).
+    ///
+    /// This is the *hit-test* mirror of `draw_taskbar`'s `y` computation
+    /// — both derive from the same two constants, so what `compose`
+    /// paints and what `handle_mouse` treats as chrome agree by
+    /// construction. On a screen shorter than the two bars the y goes
+    /// negative; `Rect::contains` still answers truthfully and every
+    /// draw primitive clips, so a degenerate screen degrades instead of
+    /// panicking.
+    fn taskbar_rect(&self) -> Rect {
+        Rect::new(
+            0,
+            self.screen_h - HINT_BAR_H - TASKBAR_H,
+            self.screen_w,
+            TASKBAR_H,
+        )
+    }
+
     // -- input -------------------------------------------------------------
 
     /// Topmost window containing the point (windows are z-sorted
@@ -351,9 +575,13 @@ impl WindowManager {
     /// Event order matters; this is the whole protocol:
     ///
     /// 1. advance the cursor by this event's delta (clamped);
-    /// 2. on a *press edge*, pick the topmost window under the cursor,
-    ///    focus it, and classify the zone (close > grip > titlebar >
-    ///    widget > bare body) — that decides what [`Drag`] becomes;
+    /// 2. on a *press edge*, check the **taskbar band first** — it is
+    ///    chrome drawn *over* the windows, so it wins the hit test and
+    ///    swallows the press (focusing its app when a button was hit,
+    ///    nothing otherwise); only a press outside the band picks the
+    ///    topmost window under the cursor, focuses it, and classifies the
+    ///    zone (close > grip > titlebar > widget > bare body) — that
+    ///    decides what [`Drag`] becomes;
     /// 3. on a *release edge*, hand the coordinates to the capturing
     ///    widget (it answers with a [`WidgetOutcome`] — a click or a
     ///    slider value) and end the drag;
@@ -377,7 +605,27 @@ impl WindowManager {
         // 2. press edge: choose window + zone.
         if pressed {
             self.drag = Drag::None;
-            if let Some(idx) = self.window_index_at(cx, cy) {
+            // 2a. The taskbar band is tested *before* any window, because
+            // `compose` paints it over them: a press that lands in the
+            // band belongs to the chrome, and must not reach the window
+            // it is covering (that window would be raised *and* focused
+            // from underneath the bar — a focus-stealing bug the user
+            // can't see). The whole band swallows the press, not just the
+            // three buttons: the gaps and the uptime stamp are chrome
+            // too, and a click on bare strip must not fall through either.
+            //
+            // Consuming here is what keeps the drag state machine clean:
+            // `drag` stays `Drag::None` from the reset above, so no zone
+            // is classified (→ no `Move`/`Resize`, no widget capture, no
+            // close flag), step 4 finds `Drag::None` and writes no
+            // geometry, and the later release edge clears `Drag::None`
+            // again — a taskbar press therefore cannot start a titlebar
+            // drag, move a window, or emit a `WidgetAction`.
+            if self.taskbar_rect().contains(cx, cy) {
+                if let Some(id) = self.taskbar_click(cx, cy) {
+                    self.focus(id);
+                }
+            } else if let Some(idx) = self.window_index_at(cx, cy) {
                 // Snapshot decisions *before* focus() re-sorts the vec.
                 let (id, zone, widget_target) = {
                     let win = &self.windows[idx];
@@ -429,6 +677,24 @@ impl WindowManager {
                             }
                         }
                         Zone::Body => {
+                            // Keyboard focus follows the press: a
+                            // TextInput hit takes the field focus; a
+                            // button/slider/bare body clears it (typing
+                            // must never continue "into" a field the
+                            // user obviously walked away from).
+                            let text_focus = match widget_target {
+                                Some(wi)
+                                    if matches!(
+                                        self.windows[idx].widgets.get(wi),
+                                        Some(Widget::TextInput(_))
+                                    ) =>
+                                {
+                                    Some(wi)
+                                }
+                                _ => None,
+                            };
+                            self.windows[idx].focused_widget = text_focus;
+                            sync_text_focus(&mut self.windows[idx]);
                             if let Some(wi) = widget_target
                                 && self.windows[idx].widgets[wi].pointer_down(lx, ly)
                             {
@@ -531,14 +797,19 @@ impl WindowManager {
 
     /// Paints the whole desktop into the backbuffer: background, every
     /// window bottom→top (chrome, then widgets), the always-on-top input
-    /// hint bar, then the cursor last. The caller flushes —
-    /// double-buffering means nothing here is visible until then.
+    /// hint bar, the taskbar strip above it, then the cursor last. The
+    /// caller flushes — double-buffering means nothing here is visible
+    /// until then.
     pub fn compose(&self, g: &mut Graphics, theme: &Theme) {
         g.clear(theme.bg);
         for win in &self.windows {
             Self::draw_window(g, theme, win);
         }
         draw_hint_bar(g, theme);
+        // Between the hint bar and the cursor: the taskbar is chrome like
+        // the hint bar (painted over the windows every frame), and the
+        // cursor stays the topmost thing on screen — see module docs.
+        draw_taskbar(g, theme);
         draw_cursor(g, self.cursor);
     }
 
@@ -662,11 +933,16 @@ const HINT_BAR_H: i32 = HINT_PAD * 2 + HINT_LINE_H * HINT_LINES.len() as i32;
 /// never times out: a user who looked away needs the same message when
 /// they look back.
 ///
-/// Drawn *after* the windows (always on top, like a taskbar/status strip)
-/// and *before* the cursor (so the pointer stays visible over it). It is
-/// decoration only: [`WindowManager::handle_mouse`] never knows it's
-/// there, so a press landing on it falls through to whatever window is
-/// beneath — which is also why it never blocks clicks on the desktop.
+/// Drawn *after* the windows (always on top — OS chrome, same layer as
+/// the taskbar) and *before* the cursor (so the pointer stays visible
+/// over it). The taskbar strip sits directly *above* this bar (see
+/// [`draw_taskbar`]), so between them they own the bottom 48 px; the two
+/// never overlap, which is why the order they are painted in doesn't
+/// matter. This bar itself is decoration only:
+/// [`WindowManager::handle_mouse`] never knows it's there, so a press
+/// landing on it falls through to whatever window is beneath — which is
+/// also why it never blocks clicks on the desktop (the taskbar, unlike
+/// this bar, *is* hit-tested — see [`WindowManager::taskbar_click`]).
 fn draw_hint_bar(g: &mut Graphics, theme: &Theme) {
     let w = g.width() as i32;
     let h = g.height() as i32;
@@ -684,6 +960,195 @@ fn draw_hint_bar(g: &mut Graphics, theme: &Theme) {
         let ty = y + HINT_PAD + i as i32 * HINT_LINE_H;
         g.draw_text(x, ty, line, theme.text_primary, None, HINT_SCALE);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The taskbar
+// ---------------------------------------------------------------------------
+
+/// Taskbar strip height in pixels — the bottom chrome band holding the
+/// three app buttons plus the uptime stamp.
+///
+/// It sits **directly above** the [`HINT_BAR_H`] hint bar, so the bottom
+/// of the screen stacks up like this (constants compose, so any height
+/// follows the same rule; shown for the two real targets):
+///
+/// ```text
+///                     800 px screen        768 px screen
+/// hint bar            y 780 .. 800         y 748 .. 768   (20 px)
+/// taskbar             y 752 .. 780         y 720 .. 748   (28 px)
+/// windows             may run under it — drawn first, occluded by both
+/// cursor              topmost, always      (compose order)
+/// ```
+///
+/// Like the hint bar this is *chrome*: `compose` paints it after every
+/// window and [`WindowManager::handle_mouse`] checks the band before it
+/// checks any window, so a press on the strip can never reach, raise or
+/// focus what is painted underneath it.
+pub const TASKBAR_H: i32 = 28;
+/// Left margin of the first button — also the margin the right-aligned
+/// uptime stamp keeps from the strip's right edge (8 px each side, so
+/// the strip frames its contents symmetrically).
+const TASKBAR_X0: i32 = 8;
+/// Button width: "Terminal" is the longest caption (8 chars × 8 px = 64
+/// px at scale 1), so 90 px leaves 13 px of padding on either side of
+/// the centered text.
+const TASKBAR_BTN_W: i32 = 90;
+/// Gap between buttons (the same 4 px separates the last button from
+/// whatever follows it).
+const TASKBAR_BTN_GAP: i32 = 4;
+/// Vertical padding between the strip's edges and its buttons: buttons
+/// are `TASKBAR_H - 2 × 6 = 16` px tall — an 8 px caption with 4 px
+/// above and below, which is also what leaves room for the strip's own
+/// 1 px top rule.
+const TASKBAR_PAD_Y: i32 = 6;
+/// Button height, **derived** from the padding so the two can't drift:
+/// shrink [`TASKBAR_PAD_Y`] and the buttons grow to match.
+const TASKBAR_BTN_H: i32 = TASKBAR_H - TASKBAR_PAD_Y * 2;
+/// Button captions, **in button order** (left to right). Index `i` here
+/// is the rect index [`taskbar_button_rects`] lays out *and* the index
+/// [`WindowManager::taskbar_click`] resolves against
+/// [`TaskbarTargets`]' same-ordered fields — one array defines the whole
+/// left-to-right contract.
+const TASKBAR_LABELS: [&str; 3] = ["Files", "Editor", "Terminal"];
+
+/// The three button rects in **global** coordinates, left to right:
+///
+/// ```text
+/// Files     x   8 ..  98     Editor    x 102 .. 192     Terminal  x 196 .. 286
+/// all       y = (strip top) + TASKBAR_PAD_Y, h = TASKBAR_BTN_H (16)
+/// ```
+///
+/// `screen_h` rather than `&self` so the drawing path — which only holds
+/// a `Graphics`, not the WM — can build the very same rects: `draw_taskbar`
+/// and [`WindowManager::taskbar_click`] sharing this one function is what
+/// guarantees the clickable region is exactly the painted button (no
+/// "invisible hit zone" class of bug, no duplicated arithmetic to keep in
+/// sync).
+fn taskbar_button_rects(screen_h: i32) -> [Rect; 3] {
+    let y = screen_h - HINT_BAR_H - TASKBAR_H + TASKBAR_PAD_Y;
+    let mut x = TASKBAR_X0;
+    let mut rects = [Rect::new(0, 0, TASKBAR_BTN_W, TASKBAR_BTN_H); 3];
+    for r in &mut rects {
+        r.x = x;
+        r.y = y;
+        x += TASKBAR_BTN_W + TASKBAR_BTN_GAP;
+    }
+    rects
+}
+
+/// Draws the taskbar strip: body, 1 px top rule, three buttons, uptime
+/// stamp.
+///
+/// Occupies `y = height - HINT_BAR_H - TASKBAR_H .. height - HINT_BAR_H`
+/// (752..780 on the CI 1280×800 framebuffer, 720..748 on the local
+/// 1024×768 VirtualBox one — see [`TASKBAR_H`] for the full stack-up).
+/// Painted after [`draw_hint_bar`] and before [`draw_cursor`]: it is OS
+/// chrome over the windows, with the pointer still topmost.
+///
+/// Like the hint bar, every primitive here clips, so a screen narrower
+/// than the 286 px the buttons need simply loses the right-most button
+/// pixels rather than panicking — and a screen shorter than the bars
+/// draws with a negative `y`, which `fill_rect` clips away.
+fn draw_taskbar(g: &mut Graphics, theme: &Theme) {
+    let w = g.width() as i32;
+    let h = g.height() as i32;
+    let y = h - HINT_BAR_H - TASKBAR_H;
+
+    // Strip body: `window_bg`, deliberately *not* `theme.bg`. The button
+    // faces are `button_bg` (0x21262D), so the strip must be darker than
+    // the buttons for them to read as raised chips — and lighter than
+    // the raw desktop (0x0D1117) so the strip reads as a surface of its
+    // own rather than a hole in the wallpaper.
+    g.fill_rect(0, y, w as u32, TASKBAR_H as u32, theme.window_bg);
+    // 1 px rule on the top edge — the same chrome cue `draw_hint_bar`
+    // uses, so the two bottom strips read as one piece of furniture
+    // instead of a stray line across the desktop.
+    g.fill_rect(0, y, w as u32, 1, theme.text_primary);
+
+    // Buttons: filled face + 1 px border + caption centered with the
+    // integer math `widgets::Button::draw` uses (scale 1 = 8 px cells).
+    // Resting state only — hover/press styling would need the WM to
+    // track pointer state over the bar (pointer events are consumed by
+    // the band before any widget sees them, see `handle_mouse`), and the
+    // focus cue the user actually needs is the target window's own
+    // titlebar lighting up.
+    let buttons = taskbar_button_rects(h);
+    for (label, r) in TASKBAR_LABELS.iter().zip(buttons.iter()) {
+        g.fill_rect(r.x, r.y, r.w as u32, r.h as u32, theme.button_bg);
+        g.draw_rect(r.x, r.y, r.w as u32, r.h as u32, theme.border);
+        let tw = Graphics::text_width(label, 1);
+        let th = Graphics::text_height(1);
+        g.draw_text(
+            r.x + (r.w - tw) / 2,
+            r.y + (r.h - th) / 2,
+            label,
+            theme.text_primary,
+            None,
+            1,
+        );
+    }
+
+    // Right-aligned uptime stamp, `TASKBAR_X0` px from the strip's edge
+    // and vertically centered in the strip (8 px tall text in a 28 px
+    // band => 10 px above it, sitting level with the button captions).
+    // `buttons[2].right() + TASKBAR_X0` is the *left* limit: on a screen
+    // too narrow for both, the buttons win and the stamp shifts right,
+    // letting the text primitive clip whatever runs off the edge.
+    let stamp_y = y + (TASKBAR_H - Graphics::text_height(1)) / 2;
+    let min_x = buttons[2].right() + TASKBAR_X0;
+    draw_uptime_stamp(g, w - TASKBAR_X0, min_x, stamp_y, theme.text_secondary);
+}
+
+/// Draws `Uptime: <secs> s` with its **right** edge at `right`, never
+/// starting left of `min_x`, at (x, y).
+///
+/// Glyph-by-glyph into a stack digit buffer instead of `format!`: every
+/// primitive that runs per frame inherits the compositor's
+/// no-allocation-per-frame rule (the titlebar text follows it too), and
+/// `compose` runs on *every* dirty event — a window drag repaints at
+/// ~100 Hz, so a tiny String alloc/free pair per frame would be pure
+/// overhead for a number nobody measures. Right-alignment normally needs
+/// the finished string's width before drawing; the digit count is
+/// computed first (u64 seconds ⇒ at most 20 digits) so the width is
+/// known before a single pixel is touched.
+///
+/// `min_x` exists for narrow screens: see `draw_taskbar`.
+fn draw_uptime_stamp(g: &mut Graphics, right: i32, min_x: i32, y: i32, color: Color) {
+    const PREFIX: &str = "Uptime: ";
+    const SUFFIX: &str = " s";
+    let secs = crate::timer::uptime_seconds();
+
+    // Decimal digit count, with 0 counting as one digit (a stopwatch
+    // showing nothing before its first second would look broken).
+    let mut digits = 1u32;
+    let mut rest = secs / 10;
+    while rest > 0 {
+        digits += 1;
+        rest /= 10;
+    }
+
+    let cell = crate::graphics::font::GLYPH_W as i32; // 8 px at scale 1
+    let total =
+        Graphics::text_width(PREFIX, 1) + digits as i32 * cell + Graphics::text_width(SUFFIX, 1);
+    let mut x = (right - total).max(min_x);
+
+    g.draw_text(x, y, PREFIX, color, None, 1);
+    x += Graphics::text_width(PREFIX, 1);
+
+    // Digits most-significant first: step to the leading place value,
+    // then peel one digit per iteration — `place` divides down to 1, so
+    // the loop emits exactly `digits` glyphs (and 10^(digits-1) always
+    // fits a u64, since digits <= 20).
+    let mut place = 10u64.pow(digits - 1);
+    while place > 0 {
+        let digit = ((secs / place) % 10) as u8;
+        g.draw_char(x, y, char::from(b'0' + digit), color, None, 1);
+        x += cell;
+        place /= 10;
+    }
+
+    g.draw_text(x, y, SUFFIX, color, None, 1);
 }
 
 // ---------------------------------------------------------------------------

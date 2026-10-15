@@ -1,4 +1,5 @@
-//! GUI widgets — the reusable pieces windows are built from (Phase 3).
+//! GUI widgets — the reusable pieces windows are built from (Phase 3,
+//! extended for Phase 4 by [`TextInput`]).
 //!
 //! ### Design: plain data + draw + pointer handlers
 //!
@@ -23,7 +24,8 @@ use alloc::string::String;
 
 use super::theme::Theme;
 use super::wm::Rect;
-use crate::graphics::{Color, Graphics};
+use crate::graphics::{Color, Graphics, font::GLYPH_W};
+use crate::input::{KeyCode, KeyEvent};
 
 /// What a widget reports when the pointer comes back up on it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -331,6 +333,222 @@ impl Slider {
 }
 
 // ---------------------------------------------------------------------------
+// TextInput
+// ---------------------------------------------------------------------------
+
+/// Horizontal padding between the field's border and its text (px).
+const TEXT_PAD: i32 = 4;
+
+/// A single-line editable text field — the Phase 4 building block for
+/// the Terminal's command line and the File Explorer's filename prompt.
+///
+/// ### Model
+///
+/// Plain data like every other widget: `value` (the text), `cursor` (a
+/// **byte** index into `value` — the keyboard driver only produces
+/// ASCII, so byte and char indices coincide and no UTF-8 boundary math
+/// is needed), `focused` (draws the caret; its owner is the window
+/// manager's focus routing in `wm.rs`, not this widget), and
+/// `placeholder` (grey hint shown while the value is empty).
+///
+/// [`TextInput::handle_key`] returns `true` when the key *changed* the
+/// value or cursor — that's the WM's "was consumed" signal. Enter is
+/// deliberately **not** consumed: submitting a line is the owner's
+/// decision (Terminal: run it; Explorer: confirm the name).
+#[derive(Debug, Clone)]
+pub struct TextInput {
+    pub rect: Rect,
+    pub value: String,
+    /// Byte index into `value` (ASCII-only input ⇒ also a char index).
+    pub cursor: usize,
+    /// Draw the caret? Mirrors "this field has keyboard focus". The WM
+    /// keeps it in sync (`sync_text_focus` in `wm.rs`) so a field in an
+    /// unfocused window never shows a caret.
+    pub focused: bool,
+    pub placeholder: String,
+}
+
+impl TextInput {
+    pub fn new(rect: Rect, placeholder: impl Into<String>) -> Self {
+        Self {
+            rect,
+            value: String::new(),
+            cursor: 0,
+            focused: false,
+            placeholder: placeholder.into(),
+        }
+    }
+
+    /// How many character cells fit between the paddings (scale 1 = 8 px
+    /// cells), never less than one so tiny rects degrade gracefully.
+    fn visible_chars(&self) -> usize {
+        let inner = (self.rect.w - TEXT_PAD * 2).max(GLYPH_W as i32) as usize;
+        inner / GLYPH_W as usize
+    }
+
+    /// How many leading characters to skip so the *cursor* stays inside
+    /// the visible window — the simplest horizontal scroll that works:
+    /// keep the caret on screen, clip whatever runs off the left edge.
+    /// Shared by `draw` and click-to-position so both agree on what
+    /// "visible" means.
+    fn hscroll(&self) -> usize {
+        let visible = self.visible_chars();
+        self.cursor.saturating_sub(visible.saturating_sub(1))
+    }
+
+    pub fn draw(&self, g: &mut Graphics, ox: i32, oy: i32, theme: &Theme) {
+        let r = self.rect;
+        // Field face + focus-reactive border (accent = "typing goes
+        // here" — same affordance language as the focused titlebar).
+        g.fill_rect(ox + r.x, oy + r.y, r.w as u32, r.h as u32, theme.button_bg);
+        let border = if self.focused {
+            theme.accent
+        } else {
+            theme.border
+        };
+        g.draw_rect(ox + r.x, oy + r.y, r.w as u32, r.h as u32, border);
+
+        let ty = oy + r.y + (r.h - Graphics::text_height(1)) / 2;
+        if self.value.is_empty() {
+            // Placeholder in muted text. Never scrolls (an empty field
+            // has nothing to scroll, and hints are short by design).
+            g.draw_text(
+                ox + r.x + TEXT_PAD,
+                ty,
+                &self.placeholder,
+                theme.text_secondary,
+                None,
+                1,
+            );
+        } else {
+            // Visible slice, drawn glyph-by-glyph like the window
+            // titlebar — no per-frame allocation, clip by column.
+            let scroll = self.hscroll();
+            let limit = self.visible_chars();
+            let x_max = ox + r.x + r.w - TEXT_PAD;
+            let mut cx = ox + r.x + TEXT_PAD;
+            for ch in self.value.chars().skip(scroll).take(limit) {
+                if cx + GLYPH_W as i32 > x_max {
+                    break;
+                }
+                g.draw_char(cx, ty, ch, theme.text_primary, None, 1);
+                cx += GLYPH_W as i32;
+            }
+        }
+
+        // Caret: a 1 px vertical rule at the cursor column when focused.
+        // `hscroll` guarantees `cursor >= scroll`, so the subtraction is
+        // safe; at the end of the text the caret sits in the trailing
+        // padding, which is exactly where a real field draws it.
+        if self.focused {
+            let scroll = self.hscroll();
+            let caret_x = ox + r.x + TEXT_PAD + ((self.cursor - scroll) as i32) * GLYPH_W as i32;
+            g.draw_line(
+                caret_x,
+                oy + r.y + 3,
+                caret_x,
+                oy + r.y + r.h - 4,
+                theme.text_primary,
+            );
+        }
+    }
+
+    /// Handles one key event. Returns `true` if the key *changed* the
+    /// value or cursor (i.e. was consumed). Key releases, Enter, Esc,
+    /// Tab, arrows-with-nothing-to-do and modifier-only keys return
+    /// `false` — the owner (window / main loop) decides what they mean.
+    pub fn handle_key(&mut self, ev: KeyEvent) -> bool {
+        if !ev.pressed {
+            // Releases never edit text (the driver reports both edges).
+            return false;
+        }
+        // Defensive clamp: an owner that poked `cursor` directly still
+        // can't make the indexing below go out of bounds.
+        let len = self.value.len();
+        if self.cursor > len {
+            self.cursor = len;
+        }
+        match ev.code {
+            KeyCode::Char(c) => {
+                // ASCII-only input (see `event.rs`) ⇒ `cursor` is always
+                // on a char boundary, so the infallible byte insert is
+                // safe here by construction.
+                self.value.insert(self.cursor, c);
+                self.cursor += c.len_utf8();
+                true
+            }
+            KeyCode::Backspace => {
+                if self.cursor == 0 {
+                    return false;
+                }
+                self.value.remove(self.cursor - 1);
+                self.cursor -= 1;
+                true
+            }
+            KeyCode::Delete => {
+                if self.cursor >= self.value.len() {
+                    return false;
+                }
+                self.value.remove(self.cursor);
+                true
+            }
+            KeyCode::ArrowLeft => {
+                if self.cursor == 0 {
+                    return false;
+                }
+                self.cursor -= 1;
+                true
+            }
+            KeyCode::ArrowRight => {
+                if self.cursor >= self.value.len() {
+                    return false;
+                }
+                self.cursor += 1;
+                true
+            }
+            KeyCode::Home => {
+                let changed = self.cursor != 0;
+                self.cursor = 0;
+                changed
+            }
+            KeyCode::End => {
+                let len = self.value.len();
+                let changed = self.cursor != len;
+                self.cursor = len;
+                changed
+            }
+            // Enter/Esc/Tab/Up/Down/Ctrl/... : not ours. Esc especially —
+            // `wm.rs` keeps it as the window-close key, and a text field
+            // that swallowed Esc would trap the user.
+            _ => false,
+        }
+    }
+
+    /// Press inside the field: place the caret at the clicked column
+    /// (honouring the horizontal scroll). Keyboard *focus* itself is the
+    /// WM's call — it sets `focused` via `sync_text_focus` right after
+    /// routing the press here.
+    pub fn pointer_down(&mut self, x: i32, y: i32) -> bool {
+        if !self.rect.contains(x, y) {
+            return false;
+        }
+        let col = (x - self.rect.x - TEXT_PAD).max(0) / GLYPH_W as i32;
+        self.cursor = (self.hscroll() + col as usize).min(self.value.len());
+        true
+    }
+
+    /// Nothing drag-sensitive about a text field (kept for enum parity
+    /// with the other widgets).
+    pub fn pointer_move(&mut self, _x: i32, _y: i32, _captured: bool) {}
+
+    /// A completed click produces no [`WidgetOutcome`] — typing *is* the
+    /// interaction; the press already placed the caret.
+    pub fn pointer_up(&mut self, _x: i32, _y: i32) -> Option<WidgetOutcome> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The widget enum — what a window actually contains
 // ---------------------------------------------------------------------------
 
@@ -344,6 +562,9 @@ pub enum Widget {
     Panel(Panel),
     ProgressBar(ProgressBar),
     Slider(Slider),
+    /// Phase 4 (RS-002): single-line text field. The WM routes keys to
+    /// it when the window's `focused_widget` points here (see `wm.rs`).
+    TextInput(TextInput),
 }
 
 impl Widget {
@@ -369,6 +590,10 @@ impl Widget {
         Widget::Slider(Slider::new(Rect::new(x, y, w, h), value))
     }
 
+    pub fn text_input(x: i32, y: i32, w: i32, h: i32, placeholder: impl Into<String>) -> Self {
+        Widget::TextInput(TextInput::new(Rect::new(x, y, w, h), placeholder))
+    }
+
     // -- drawing ----------------------------------------------------------
 
     pub fn draw(&self, g: &mut Graphics, ox: i32, oy: i32, theme: &Theme) {
@@ -378,6 +603,7 @@ impl Widget {
             Widget::Panel(p) => p.draw(g, ox, oy),
             Widget::ProgressBar(p) => p.draw(g, ox, oy, theme),
             Widget::Slider(s) => s.draw(g, ox, oy, theme),
+            Widget::TextInput(t) => t.draw(g, ox, oy, theme),
         }
     }
 
@@ -387,6 +613,7 @@ impl Widget {
         match self {
             Widget::Button(b) => b.rect.contains(x, y),
             Widget::Slider(s) => s.rect.contains(x, y),
+            Widget::TextInput(t) => t.rect.contains(x, y),
             Widget::Label(_) | Widget::Panel(_) | Widget::ProgressBar(_) => false,
         }
     }
@@ -397,6 +624,7 @@ impl Widget {
         match self {
             Widget::Button(b) => b.pointer_down(x, y),
             Widget::Slider(s) => s.pointer_down(x, y),
+            Widget::TextInput(t) => t.pointer_down(x, y),
             // Non-interactive widgets never capture a press.
             Widget::Label(_) | Widget::Panel(_) | Widget::ProgressBar(_) => false,
         }
@@ -406,6 +634,7 @@ impl Widget {
         match self {
             Widget::Button(b) => b.pointer_move(x, y, captured),
             Widget::Slider(s) => s.pointer_move(x, y, captured),
+            Widget::TextInput(t) => t.pointer_move(x, y, captured),
             Widget::Label(_) | Widget::Panel(_) | Widget::ProgressBar(_) => {}
         }
     }
@@ -414,6 +643,7 @@ impl Widget {
         match self {
             Widget::Button(b) => b.pointer_up(x, y),
             Widget::Slider(s) => s.pointer_up(x, y),
+            Widget::TextInput(t) => t.pointer_up(x, y),
             Widget::Label(_) | Widget::Panel(_) | Widget::ProgressBar(_) => None,
         }
     }

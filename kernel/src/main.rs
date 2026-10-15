@@ -24,7 +24,9 @@
 mod serial;
 
 mod allocator;
+mod apps;
 mod event;
+mod fs;
 mod gdt;
 mod graphics;
 mod gui;
@@ -266,6 +268,9 @@ const W_ABOUT_TICKS: usize = 3;
 const W_PLAY_SLIDER: usize = 0;
 const W_PLAY_VALUE: usize = 1;
 const W_PLAY_MIRROR: usize = 2;
+// Phase 4 (RS-002): the demo text input (widget #4; #3 is its caption
+// label, which nothing ever updates — no index constant needed).
+const W_PLAY_TEXT_INPUT: usize = 4;
 
 // Keyboard cursor fallback (VirtualBox delivers no PS/2 mouse packets —
 // `[ps2] mouse irq count = 0`): arrow keys drive the *same* software
@@ -294,6 +299,13 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
     let screen_w = gfx.width() as i32;
     let screen_h = gfx.height() as i32;
     let mut wm = WindowManager::new(screen_w, screen_h);
+
+    // Phase 4 foundation (RS-001): the in-memory filesystem. The desktop
+    // owns the instance — the File Explorer / Text Editor / Terminal
+    // built next cycle reach it through the event loop (`apps` below),
+    // which mutates it (New file, editor Save, `write` at the prompt).
+    let mut ramfs = fs::FileSystem::new();
+    serial_println!("[fs     ] ramfs ready: {} files", ramfs.file_count());
 
     // -- demo window 1: Welcome (also the initial focus) ------------------
     let welcome = wm.create_window("Welcome", 80, 60, 400, 200);
@@ -377,7 +389,9 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
     }
 
     // -- demo window 3: Playground (the interactive widgets) --------------
-    let playground = wm.create_window("Playground", 320, 220, 300, 150);
+    // Height 210 (was 150): room for the Phase 4 text field below the
+    // slider/progress pair.
+    let playground = wm.create_window("Playground", 320, 220, 300, 210);
     {
         let w = wm
             .window_mut(playground)
@@ -391,7 +405,35 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
         w.widgets
             .push(Widget::label("Value: 0.50", 12, 88, theme.text_primary));
         w.widgets.push(Widget::progress(12, 110, 276, 14, 0.5));
+        // Phase 4 foundation (RS-002): one live text field. Click it to
+        // type — while it has focus, keys land here instead of the
+        // cursor fallback (see the `has_text_focus` gate in the event
+        // loop); Enter commits and hands the keyboard back.
+        w.widgets.push(Widget::label(
+            "Text input - click, then type:",
+            12,
+            138,
+            theme.text_secondary,
+        ));
+        w.widgets
+            .push(Widget::text_input(12, 156, 276, 24, "type here"));
     }
+
+    // Phase 4 (cycle 2): the shell — Files, Editor and Terminal. Built
+    // after the demo windows so they sit above them in the z-order, then
+    // primed once (the explorer listing is the only fs-backed view that
+    // needs data before the first frame). The constructor itself touches
+    // no filesystem — see `apps::Apps::new`.
+    let mut apps = apps::Apps::new(&mut wm, &theme);
+    // Tell the taskbar which windows its three buttons focus. This is
+    // the only place that knows both halves — the shell (which owns the
+    // app windows) and the WM (which owns the strip) — so the ids are
+    // handed over here rather than the WM ever looking at `apps` or
+    // matching window titles (see `WindowManager::set_taskbar_targets`).
+    // Until this line the buttons draw but every click reports `None`.
+    wm.set_taskbar_targets(apps.explorer.win, apps.editor.win, apps.terminal.win);
+    apps.refresh(&mut wm, &ramfs);
+    serial_println!("[apps  ] shell ready: Files, Editor, Terminal");
 
     // Welcome starts focused (it was created first; re-assert so the
     // titlebar/border styling and Esc target are unambiguous).
@@ -460,12 +502,25 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                     // 2-second 0→1 sweep: proves the tick path drives
                     // animation, not just the log.
                     wm.set_progress(welcome, W_WELCOME_PROGRESS, (n % 200) as f32 / 200.0);
-                    dirty = true;
+                    dirty = true; // the sweep above is itself a change
+                    // Phase 4 (cycle 2): fold in the shell's 1 Hz hook.
+                    // Nothing in the apps is time-dependent yet (see
+                    // `Apps::on_tick`), so today it contributes `false`.
+                    dirty |= apps.on_tick(&mut wm);
                 }
 
                 // -- mouse: cursor, drags, widget actions ------------------
                 Event::Mouse(me) => {
                     if let Some(action) = wm.handle_mouse(me) {
+                        // Phase 4 (cycle 2): shell windows (Files, Editor,
+                        // Terminal) handle their own clicks. Actions from
+                        // the demo windows fall through to the wiring
+                        // below, unchanged. The return value needs no say
+                        // in `dirty`: this arm repaints unconditionally
+                        // anyway (the cursor moved — see the `dirty = true`
+                        // at its end), so the flag would be overwritten
+                        // before it was read.
+                        apps.on_action(action, &mut wm, &mut ramfs, &theme);
                         match action.outcome {
                             WidgetOutcome::Clicked => {
                                 serial_println!(
@@ -510,79 +565,196 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                     dirty = true; // cursor (or hover/press state) moved
                 }
 
-                // -- keys: Esc closes; arrows/space/enter drive the ------
-                // -- keyboard cursor fallback (mouse irq count = 0) ------
+                // -- keys: Ctrl+1/2/3 switches windows, otherwise a -----
+                // -- focused text field owns the keyboard, Esc closes, --
+                // -- and arrows/space/enter drive the keyboard cursor ---
+                // -- fallback (mouse irq count = 0) ---------------------
                 Event::Key(k) => {
                     if k.pressed {
-                        match k.code {
-                            // Modifier *state* only — the driver already
-                            // baked shift/caps into Char keys; skip noise.
-                            KeyCode::Shift | KeyCode::Ctrl | KeyCode::Alt => {}
-                            KeyCode::Esc => {
-                                serial_println!("[gui    ] key Esc — closing focused window");
-                                maybe_close = true;
+                        // Ctrl+1/2/3 — the taskbar's keyboard twin: focus
+                        // Files / Editor / Terminal. Checked *first*,
+                        // ahead of the shell's first-refusal below *and*
+                        // the `has_text_focus` gate further down, for two
+                        // reasons: (a) it must work while a field is
+                        // focused — switching away mid-typing is the
+                        // point of a window-switch hotkey, not a bug —
+                        // and (b) the event must then be fully consumed,
+                        // otherwise `TextInput::handle_key` would splice
+                        // the digit into whatever the caret was sitting
+                        // in on the way to the new window. Press edge
+                        // only: the release half of the same keystroke
+                        // must not fire the switch a second time (it
+                        // couldn't — the whole arm is press-gated — but
+                        // keeping the condition next to the code says
+                        // why it is where it is).
+                        if k.modifiers.ctrl {
+                            let target = match k.code {
+                                KeyCode::Char('1') => Some((apps.explorer.win, "Files")),
+                                KeyCode::Char('2') => Some((apps.editor.win, "Editor")),
+                                KeyCode::Char('3') => Some((apps.terminal.win, "Terminal")),
+                                _ => None,
+                            };
+                            if let Some((id, name)) = target {
+                                wm.focus(id);
+                                serial_println!("[apps  ] focus: {name}");
+                                dirty = true; // focus styling must repaint
+                                continue; // consumed — skip the rest
                             }
-                            // Arrows move the *same* cursor the PS/2 mouse
-                            // driver owns — never a second one. Two views
-                            // must stay equal: `mouse::nudge` advances the
-                            // driver's clamped absolute position (the 1 Hz
-                            // `[gui] cursor at` line reads it), and a
-                            // synthetic MouseEvent carrying the identical
-                            // delta rides the normal `handle_mouse` path,
-                            // so hover/widget tracking is exactly what a
-                            // real packet would trigger. Same delta + the
-                            // same clamp in both places ⇒ they agree. Shift
-                            // = fine step.
-                            KeyCode::ArrowUp
-                            | KeyCode::ArrowDown
-                            | KeyCode::ArrowLeft
-                            | KeyCode::ArrowRight => {
-                                let step = if k.modifiers.shift {
-                                    CURSOR_STEP_FINE
-                                } else {
-                                    CURSOR_STEP
-                                };
-                                let (dx, dy) = match k.code {
-                                    KeyCode::ArrowUp => (0, -step),
-                                    KeyCode::ArrowDown => (0, step),
-                                    KeyCode::ArrowLeft => (-step, 0),
-                                    _ => (step, 0), // ArrowRight
-                                };
-                                input::mouse::nudge(dx, dy);
-                                event::push(Event::Mouse(MouseEvent {
-                                    dx,
-                                    dy,
-                                    buttons: MouseButtons::default(),
-                                }));
-                            }
-                            // Space/Enter = synthetic click at the cursor:
-                            // the exact LEFT_PRESSED → LEFT_RELEASED pair a
-                            // real PS/2 click produces, fed through the same
-                            // `handle_mouse` state machine — focus, drag
-                            // capture, close-button and widget actions all
-                            // behave identically. No parallel hit-test.
-                            KeyCode::Char(' ') | KeyCode::Enter => {
-                                let (x, y) = input::mouse::position();
-                                serial_println!("[gui    ] keyboard click at ({x}, {y})");
-                                event::push(Event::Mouse(MouseEvent {
-                                    dx: 0,
-                                    dy: 0,
-                                    buttons: MouseButtons {
-                                        left: true,
-                                        right: false,
-                                        middle: false,
-                                    },
-                                }));
-                                event::push(Event::Mouse(MouseEvent {
-                                    dx: 0,
-                                    dy: 0,
-                                    buttons: MouseButtons::default(),
-                                }));
-                            }
-                            other => serial_println!("[gui    ] key {other}"),
                         }
-                        wm.handle_key(k);
-                        dirty = true;
+                        // Phase 4 (cycle 2): the shell takes first refusal
+                        // on every key while one of its own windows is
+                        // focused — deliberately *before* the text-focus
+                        // gate below, because a TextInput does not consume
+                        // Enter/arrows (submitting a command, loading a
+                        // file or moving a selection is the app's call).
+                        if apps.owns_focus(&wm) {
+                            dirty |= apps.on_key(k, &mut wm, &mut ramfs, &theme);
+                        }
+                        // Phase 4 (RS-002): while the focused window
+                        // routes keys to a text field, printable and
+                        // editing keys belong to it. Without this gate
+                        // the fallback arms below would fight the caret:
+                        // arrows would drag the mouse cursor mid-caret-
+                        // move, and space would insert a char *and* fake
+                        // a click that could steal focus back. Esc still
+                        // closes the window (the field never consumes
+                        // it); Enter is the owner's to interpret — the
+                        // demo commits and releases the field, so a
+                        // keyboard-only user is never trapped in the
+                        // caret.
+                        if wm.has_text_focus() {
+                            // Commit-and-release on Enter is the *demo
+                            // field's* behaviour. Shell fields keep their
+                            // caret — a terminal prompt must survive its
+                            // own Enter — and report through the apps'
+                            // serial lines instead of this one.
+                            let demo = wm.focused_window() == Some(playground);
+                            let before = if demo {
+                                wm.text_value(playground, W_PLAY_TEXT_INPUT)
+                            } else {
+                                None
+                            };
+                            match k.code {
+                                KeyCode::Enter if demo => {
+                                    serial_println!(
+                                        "[gui    ] text field commit: \"{}\"",
+                                        before.as_deref().unwrap_or("")
+                                    );
+                                    wm.clear_widget_focus(playground);
+                                }
+                                KeyCode::Esc => {
+                                    serial_println!("[gui    ] key Esc — closing focused window");
+                                    maybe_close = true;
+                                }
+                                _ => {}
+                            }
+                            wm.handle_key(k);
+                            if demo {
+                                let after = wm.text_value(playground, W_PLAY_TEXT_INPUT);
+                                if after != before
+                                    && let Some(v) = after
+                                {
+                                    // The end-to-end pipeline proof: scancode
+                                    // -> KeyEvent -> focused TextInput ->
+                                    // visible edit + serial line.
+                                    serial_println!("[gui    ] text field: \"{v}\"");
+                                }
+                            }
+                            dirty = true;
+                        } else if apps.owns_focus(&wm) {
+                            // A shell window with no field focused: the
+                            // app already saw this key above, and the
+                            // Phase 3 fallback must stay off — its
+                            // synthetic Space/Enter click would race the
+                            // app that is handling the very same key
+                            // (Enter would submit *and* click whatever
+                            // sits under the cursor), and its arrows
+                            // would double up with the app's selection.
+                            // Esc still closes, as everywhere.
+                            match k.code {
+                                KeyCode::Shift | KeyCode::Ctrl | KeyCode::Alt => {}
+                                KeyCode::Esc => {
+                                    serial_println!("[gui    ] key Esc — closing focused window");
+                                    maybe_close = true;
+                                    dirty = true; // the reap must repaint
+                                }
+                                _ => {}
+                            }
+                            wm.handle_key(k);
+                            // Any visible change already set `dirty` in
+                            // the `apps.on_key` call above; a key the app
+                            // ignored moves nothing on screen.
+                        } else {
+                            match k.code {
+                                // Modifier *state* only — the driver already
+                                // baked shift/caps into Char keys; skip noise.
+                                KeyCode::Shift | KeyCode::Ctrl | KeyCode::Alt => {}
+                                KeyCode::Esc => {
+                                    serial_println!("[gui    ] key Esc — closing focused window");
+                                    maybe_close = true;
+                                }
+                                // Arrows move the *same* cursor the PS/2 mouse
+                                // driver owns — never a second one. Two views
+                                // must stay equal: `mouse::nudge` advances the
+                                // driver's clamped absolute position (the 1 Hz
+                                // `[gui] cursor at` line reads it), and a
+                                // synthetic MouseEvent carrying the identical
+                                // delta rides the normal `handle_mouse` path,
+                                // so hover/widget tracking is exactly what a
+                                // real packet would trigger. Same delta + the
+                                // same clamp in both places ⇒ they agree. Shift
+                                // = fine step.
+                                KeyCode::ArrowUp
+                                | KeyCode::ArrowDown
+                                | KeyCode::ArrowLeft
+                                | KeyCode::ArrowRight => {
+                                    let step = if k.modifiers.shift {
+                                        CURSOR_STEP_FINE
+                                    } else {
+                                        CURSOR_STEP
+                                    };
+                                    let (dx, dy) = match k.code {
+                                        KeyCode::ArrowUp => (0, -step),
+                                        KeyCode::ArrowDown => (0, step),
+                                        KeyCode::ArrowLeft => (-step, 0),
+                                        _ => (step, 0), // ArrowRight
+                                    };
+                                    input::mouse::nudge(dx, dy);
+                                    event::push(Event::Mouse(MouseEvent {
+                                        dx,
+                                        dy,
+                                        buttons: MouseButtons::default(),
+                                    }));
+                                }
+                                // Space/Enter = synthetic click at the cursor:
+                                // the exact LEFT_PRESSED → LEFT_RELEASED pair a
+                                // real PS/2 click produces, fed through the same
+                                // `handle_mouse` state machine — focus, drag
+                                // capture, close-button and widget actions all
+                                // behave identically. No parallel hit-test.
+                                KeyCode::Char(' ') | KeyCode::Enter => {
+                                    let (x, y) = input::mouse::position();
+                                    serial_println!("[gui    ] keyboard click at ({x}, {y})");
+                                    event::push(Event::Mouse(MouseEvent {
+                                        dx: 0,
+                                        dy: 0,
+                                        buttons: MouseButtons {
+                                            left: true,
+                                            right: false,
+                                            middle: false,
+                                        },
+                                    }));
+                                    event::push(Event::Mouse(MouseEvent {
+                                        dx: 0,
+                                        dy: 0,
+                                        buttons: MouseButtons::default(),
+                                    }));
+                                }
+                                other => serial_println!("[gui    ] key {other}"),
+                            }
+                            wm.handle_key(k);
+                            dirty = true;
+                        }
                     }
                 }
             }
