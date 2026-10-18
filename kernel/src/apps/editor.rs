@@ -243,8 +243,9 @@ impl Editor {
     /// Reads [`Self::path`] from the filesystem, resets the selection to
     /// the first line and repaints. Missing files become an empty buffer
     /// (never a panic — the ramfs answers `None`, we answer a message).
-    fn load(&mut self, wm: &mut WindowManager, fs: &FileSystem) {
-        let content = fs.read(&self.path);
+    fn load(&mut self, wm: &mut WindowManager, _fs: &FileSystem) {
+        let bytes_opt = crate::fs::vfs::read(&self.path);
+        let content = bytes_opt.as_deref().and_then(|b| core::str::from_utf8(b).ok());
         self.lines = match content {
             Some(text) => text.split('\n').map(String::from).collect(),
             None => Vec::new(),
@@ -286,13 +287,16 @@ impl Editor {
             return true;
         }
         let text = self.lines.join("\n");
-        if !fs.write(&self.path, &text) {
+        if let Err(err) = crate::fs::vfs::write(&self.path, text.as_bytes()) {
             wm.set_label(
                 self.win,
                 ED_STATUS,
-                format!("cannot write {}", clip(&self.path, 24)),
+                format!("cannot write: {err}"),
             );
             return true;
+        }
+        if !crate::fs::vfs::is_disk_path(&self.path) {
+            fs.write(&self.path, &text);
         }
         let n = self.lines.len();
         serial_println!("[apps  ] editor save: {} ({n} lines)", self.path);

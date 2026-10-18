@@ -247,6 +247,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     );
                                 }
                             }
+                            fs::vfs::init_vfs(fat_fs);
                         }
                         Err(err) => {
                             serial_println!("[fat    ] failed to mount partition: {err}");

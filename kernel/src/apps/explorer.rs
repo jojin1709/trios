@@ -48,9 +48,7 @@ use crate::gui::{Theme, WidgetOutcome, WindowManager};
 
 // ---------------------------------------------------------------------------
 // Widget indices (creation order — see module docs)
-// ---------------------------------------------------------------------------
-
-/// The cwd header label (pushed first, so index 0).
+// ---------------------------------------------------------------------/// The cwd header label (pushed first, so index 0).
 pub const EX_CWD: usize = 0;
 /// First of the [`EX_ROW_COUNT`] directory-entry row labels.
 pub const EX_ROWS: usize = EX_CWD + 1;
@@ -60,8 +58,14 @@ pub const EX_ROW_COUNT: usize = 14;
 pub const EX_UP: usize = EX_ROWS + EX_ROW_COUNT;
 /// The "New file" button (creates from the [`EX_INPUT`] prompt).
 pub const EX_NEW: usize = EX_UP + 1;
-/// The filename prompt feeding "New file".
-pub const EX_INPUT: usize = EX_NEW + 1;
+/// The "New folder" button.
+pub const EX_MKDIR: usize = EX_NEW + 1;
+/// The "Rename" button.
+pub const EX_RENAME: usize = EX_MKDIR + 1;
+/// The "Delete" button.
+pub const EX_DELETE: usize = EX_RENAME + 1;
+/// The filename prompt feeding "New file" / "New folder" / "Rename".
+pub const EX_INPUT: usize = EX_DELETE + 1;
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -74,7 +78,7 @@ const WIN_H: i32 = 286;
 /// First row's y, and the row pitch: 8 px glyphs + 4 px of gap.
 const ROW_Y: i32 = 54;
 const ROW_H: i32 = 12;
-/// Button/input band, shared by the two buttons and the prompt.
+/// Button/input band, shared by buttons and the prompt.
 const BUTTON_Y: i32 = 228;
 const INPUT_Y: i32 = 256;
 /// Characters of an entry name before clipping (the `"> "` prefix and an
@@ -122,11 +126,13 @@ impl Explorer {
                     theme.text_primary,
                 ));
             }
-            w.widgets.push(Widget::button(12, BUTTON_Y, 76, 22, "Up"));
+            w.widgets.push(Widget::button(10, BUTTON_Y, 44, 22, "Up"));
+            w.widgets.push(Widget::button(59, BUTTON_Y, 52, 22, "+File"));
+            w.widgets.push(Widget::button(116, BUTTON_Y, 58, 22, "+Folder"));
+            w.widgets.push(Widget::button(179, BUTTON_Y, 54, 22, "Rename"));
+            w.widgets.push(Widget::button(238, BUTTON_Y, 52, 22, "Delete"));
             w.widgets
-                .push(Widget::button(96, BUTTON_Y, 96, 22, "New file"));
-            w.widgets
-                .push(Widget::text_input(12, INPUT_Y, 276, 22, "new file name"));
+                .push(Widget::text_input(10, INPUT_Y, 280, 22, "name / new name"));
         }
         Self {
             win,
@@ -142,7 +148,7 @@ impl Explorer {
     /// "New file", descending into a directory, going up — changed the
     /// listing, so the frame is dirty by construction.
     pub fn refresh(&mut self, wm: &mut WindowManager, fs: &FileSystem) -> bool {
-        let len = fs.list(&self.cwd).len();
+        let len = crate::fs::vfs::list_dir(&self.cwd).map_or(0, |l| l.len());
         if self.selected >= len {
             self.selected = len.saturating_sub(1);
         }
@@ -151,12 +157,6 @@ impl Explorer {
     }
 
     /// Handles one finished click inside the "Files" window.
-    ///
-    /// The editor and theme parameters exist for [`super::Apps`]'s
-    /// uniform signature and go unused here: opening a file is a
-    /// *keyboard* action (Enter on a row), and labels keep the color they
-    /// were created with. A non-[`WidgetOutcome::Clicked`] outcome — or a
-    /// row index — is not this app's business and reports no change.
     pub fn on_action(
         &mut self,
         widget_index: usize,
@@ -172,21 +172,14 @@ impl Explorer {
         match widget_index {
             EX_UP => self.go_up(wm, fs),
             EX_NEW => self.create_file(wm, fs),
+            EX_MKDIR => self.create_dir(wm, fs),
+            EX_RENAME => self.rename_selected(wm, fs),
+            EX_DELETE => self.delete_selected(wm, fs),
             _ => false,
         }
     }
 
     /// Handles one key press while the "Files" window is focused.
-    ///
-    /// * `ArrowUp`/`ArrowDown` — move the `"> "` selection (logged);
-    /// * `Enter` — open the selected row: a directory becomes the new
-    ///   [`Self::cwd`] and repaints, a file is handed to
-    ///   [`Editor::open_path`], which focuses the Editor's filename field;
-    /// * `Backspace` — parent directory (suppressed while a text field is
-    ///   focused, so it keeps meaning "delete a character" for the caret).
-    ///
-    /// The theme parameter goes unused — row colors are fixed at
-    /// creation time.
     pub fn on_key(
         &mut self,
         event: KeyEvent,
@@ -203,7 +196,7 @@ impl Explorer {
                 if self.selected == 0 {
                     return false;
                 }
-                let entries = fs.list(&self.cwd);
+                let entries = crate::fs::vfs::list_dir(&self.cwd).unwrap_or_default();
                 self.selected -= 1;
                 if let Some(entry) = entries.get(self.selected) {
                     serial_println!("[apps  ] explorer select: {}", entry.name);
@@ -212,7 +205,7 @@ impl Explorer {
                 true
             }
             KeyCode::ArrowDown => {
-                let entries = fs.list(&self.cwd);
+                let entries = crate::fs::vfs::list_dir(&self.cwd).unwrap_or_default();
                 if self.selected + 1 >= entries.len() {
                     return false;
                 }
@@ -224,7 +217,7 @@ impl Explorer {
                 true
             }
             KeyCode::Enter => {
-                let entries = fs.list(&self.cwd);
+                let entries = crate::fs::vfs::list_dir(&self.cwd).unwrap_or_default();
                 let Some(entry) = entries.get(self.selected) else {
                     return false;
                 };
@@ -238,15 +231,7 @@ impl Explorer {
                     true
                 }
             }
-            // While the filename prompt owns the keyboard, Backspace must
-            // delete text — not yank the view up a directory mid-word.
-            // This guard is also what makes `WindowManager::focus_and_type`
-            // safe to arm that prompt on Ctrl+1/taskbar focus: `main.rs`
-            // runs `apps.on_key` *before* `wm.handle_key`, so the guard
-            // always sees the current armed state and exactly one
-            // Backspace meaning fires per press — armed => the caret
-            // (this arm falls through, `TextInput::handle_key` deletes),
-            // unarmed => `go_up` below, with no field to double-fire into.
+            KeyCode::Delete if !wm.has_text_focus() => self.delete_selected(wm, fs),
             KeyCode::Backspace if !wm.has_text_focus() => self.go_up(wm, fs),
             _ => false,
         }
@@ -255,11 +240,10 @@ impl Explorer {
     // -- helpers -----------------------------------------------------------
 
     /// Rewrites the cwd header and all [`EX_ROW_COUNT`] rows from the
-    /// current listing — the *only* place row text is built, so the
-    /// `"> "` marker can never drift between repaint and selection move.
-    fn paint(&self, wm: &mut WindowManager, fs: &FileSystem) {
+    /// current listing.
+    fn paint(&self, wm: &mut WindowManager, _fs: &FileSystem) {
         wm.set_label(self.win, EX_CWD, clip(&self.cwd, CWD_CLIP));
-        let entries = fs.list(&self.cwd);
+        let entries = crate::fs::vfs::list_dir(&self.cwd).unwrap_or_default();
         for i in 0..EX_ROW_COUNT {
             let text = match entries.get(i) {
                 Some(entry) => {
@@ -295,9 +279,7 @@ impl Explorer {
         }
     }
 
-    /// Descends to the parent directory (`"/a/b"` -> `"/a"` ->
-    /// `"/"`). Staying at the root changes nothing, so it reports no
-    /// visible change.
+    /// Descends to the parent directory (`"/a/b"` -> `"/a"` -> `"/"`).
     fn go_up(&mut self, wm: &mut WindowManager, fs: &FileSystem) -> bool {
         if self.cwd == "/" {
             return false;
@@ -307,10 +289,7 @@ impl Explorer {
         self.refresh(wm, fs)
     }
 
-    /// Creates `cwd/<name>` from the [`EX_INPUT`] prompt: an empty prompt
-    /// is a no-op (there is no sensible name to invent), anything else is
-    /// written as an empty file, the prompt is cleared and the new row
-    /// selected so the very next Enter opens it.
+    /// Creates `cwd/<name>` from the [`EX_INPUT`] prompt.
     fn create_file(&mut self, wm: &mut WindowManager, fs: &mut FileSystem) -> bool {
         let Some(name) = wm.text_value(self.win, EX_INPUT) else {
             return false;
@@ -320,17 +299,100 @@ impl Explorer {
             return false;
         }
         let path = join(&self.cwd, name);
-        if !fs.write(&path, "") {
+        if let Err(err) = crate::fs::vfs::write(&path, &[]) {
+            serial_println!("[apps  ] explorer create file error: {err}");
+            crate::gui::notify("Explorer", format!("Create failed: {err}"), crate::gui::NotificationKind::Error);
             return false;
         }
-        // Re-select what we just created: the listing sorts directories
-        // first, so the index has to come from the tree, not the input.
-        self.selected = fs
-            .list(&self.cwd)
-            .iter()
-            .position(|e| e.name == name)
-            .unwrap_or(0);
+        if !crate::fs::vfs::is_disk_path(&path) {
+            fs.write(&path, "");
+        }
         set_field(wm, self.win, EX_INPUT, "");
+        self.selected = crate::fs::vfs::list_dir(&self.cwd)
+            .ok()
+            .and_then(|entries| entries.iter().position(|e| e.name.eq_ignore_ascii_case(name)))
+            .unwrap_or(0);
+        self.refresh(wm, fs)
+    }
+
+    /// Creates a directory `cwd/<name>` from the [`EX_INPUT`] prompt.
+    fn create_dir(&mut self, wm: &mut WindowManager, fs: &mut FileSystem) -> bool {
+        let Some(name) = wm.text_value(self.win, EX_INPUT) else {
+            return false;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        let path = join(&self.cwd, name);
+        if let Err(err) = crate::fs::vfs::mkdir(&path) {
+            serial_println!("[apps  ] explorer mkdir error: {err}");
+            crate::gui::notify("Explorer", format!("mkdir failed: {err}"), crate::gui::NotificationKind::Error);
+            return false;
+        }
+        if !crate::fs::vfs::is_disk_path(&path) {
+            fs.ensure_dir_pub(&path);
+        }
+        set_field(wm, self.win, EX_INPUT, "");
+        self.selected = crate::fs::vfs::list_dir(&self.cwd)
+            .ok()
+            .and_then(|entries| entries.iter().position(|e| e.name.eq_ignore_ascii_case(name)))
+            .unwrap_or(0);
+        self.refresh(wm, fs)
+    }
+
+    /// Deletes the currently selected file or directory.
+    fn delete_selected(&mut self, wm: &mut WindowManager, fs: &mut FileSystem) -> bool {
+        let entries = crate::fs::vfs::list_dir(&self.cwd).unwrap_or_default();
+        let Some(entry) = entries.get(self.selected) else {
+            return false;
+        };
+        if self.cwd == "/" && entry.name == "disk" {
+            crate::gui::notify("Explorer", String::from("cannot delete /disk mount"), crate::gui::NotificationKind::Error);
+            return false;
+        }
+        let path = join(&self.cwd, &entry.name);
+        if let Err(err) = crate::fs::vfs::delete(&path) {
+            serial_println!("[apps  ] explorer delete error: {err}");
+            crate::gui::notify("Explorer", format!("delete failed: {err}"), crate::gui::NotificationKind::Error);
+            return false;
+        }
+        if !crate::fs::vfs::is_disk_path(&path) {
+            fs.delete(&path);
+        }
+        crate::gui::notify("Explorer", format!("Deleted {}", entry.name), crate::gui::NotificationKind::Success);
+        self.refresh(wm, fs)
+    }
+
+    /// Renames the currently selected file or directory to the text in the input box.
+    fn rename_selected(&mut self, wm: &mut WindowManager, fs: &mut FileSystem) -> bool {
+        let Some(new_name) = wm.text_value(self.win, EX_INPUT) else {
+            return false;
+        };
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return false;
+        }
+        let entries = crate::fs::vfs::list_dir(&self.cwd).unwrap_or_default();
+        let Some(entry) = entries.get(self.selected) else {
+            return false;
+        };
+        if self.cwd == "/" && entry.name == "disk" {
+            crate::gui::notify("Explorer", String::from("cannot rename /disk mount"), crate::gui::NotificationKind::Error);
+            return false;
+        }
+        let old_path = join(&self.cwd, &entry.name);
+        let new_path = join(&self.cwd, new_name);
+        if let Err(err) = crate::fs::vfs::rename(&old_path, &new_path) {
+            serial_println!("[apps  ] explorer rename error: {err}");
+            crate::gui::notify("Explorer", format!("rename failed: {err}"), crate::gui::NotificationKind::Error);
+            return false;
+        }
+        if !crate::fs::vfs::is_disk_path(&old_path) {
+            let _ = fs.rename(&old_path, &new_path);
+        }
+        set_field(wm, self.win, EX_INPUT, "");
+        crate::gui::notify("Explorer", format!("Renamed to {new_name}"), crate::gui::NotificationKind::Success);
         self.refresh(wm, fs)
     }
 }

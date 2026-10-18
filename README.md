@@ -61,7 +61,7 @@ TriOS is a modern, bare-metal operating system built from the ground up in Rust 
 
 ## Architecture & Status
 
-TriOS has completed **Phase 0 through Phase 19**:
+TriOS has completed **Phase 0 through Phase 22**:
 
 | Phase | Milestone | Status | Key Subsystems |
 | :--- | :--- | :---: | :--- |
@@ -87,11 +87,18 @@ TriOS has completed **Phase 0 through Phase 19**:
 | **Phase 19** | Typography & System Apps | **Done** | Fontdue TTF vector typography (`Inter` & `JetBrains Mono`), Settings App (`Ctrl+7`), Boot splash animation, Lock Screen (`Ctrl+L`), app polish |
 | **Phase 20** | Memory Management | **Done** | Bitmap physical frame allocator, themed page-fault screen, thread stack guard pages, kernel virtual memory API (`map_page`/`unmap_page`/`alloc_pages`/`free_pages`), hybrid slab/size-class heap allocator (32B..2048B), `meminfo` shell command & SysMon physical frame gauges |
 | **Phase 21** | Real Processes & Ring 3 | **Done** | Per-process PML4 page tables (shared kernel half, isolated user half), Ring 3 execution via `iretq`/`sysretq`, full syscall suite (`exit`, `write`, `read`, `yield`, `uptime`, `getpid`, `sleep_ms`, `mmap`, `munmap`, `open`, `close`), strict user pointer validation, process table & teardown, user fault isolation, `ps` & `kill` commands |
+| **Phase 22** | VFS & Persistent Writes | **Done** | Unified Virtual File System (`/` ramfs, `/disk` persistent FAT), AHCI DMA sector writing (`write_sectors`), FAT12/16/32 persistent write engine (create, write, append, delete, mkdir, rename), Editor Save & Files Explorer persistence, `fsck-lite` consistency checker |
 
 ---
 
 ## Key Features
 
+- **Unified Virtual File System & Persistent Writes (Phase 22)**: Complete storage stack with cross-filesystem dispatch and persistent block writing:
+  - **Unified VFS Hierarchy**: Mount architecture dispatching `/` to fast in-memory `ramfs` and `/disk` to the active persistent FAT filesystem on SATA storage. All path lookups, directories, and file streams resolve transparently across filesystem boundaries.
+  - **AHCI DMA Sector Writing**: Implemented `write_sectors` in `drivers/ahci.rs` utilizing ATA command `ATA_CMD_WRITE_DMA_EXT` (`0x35`), setting the write transfer bit (bit 6) in the AHCI Command Header, staging data through physically contiguous DMA buffers, and awaiting PxCI hardware completion.
+  - **Multi-FAT Persistent Write Engine**: Robust write support across FAT12, FAT16, and FAT32 filesystems (`fs/fat.rs`), featuring FAT sector writeback synchronized across both FAT1 and FAT2 tables, free cluster scanning & zeroed allocation (`alloc_cluster`), cluster chain reclamation (`free_cluster_chain`), standard 8.3 space-padded uppercase filename conversion (`to_dos_8_3`), directory expansion, subfolder creation (`mkdir`) with `.` and `..` parent cluster references, file creation/overwriting/appending (`write_file`, `append_file`), and deletion (`delete_file`).
+  - **Files Explorer & Text Editor Integration**: Files Explorer provides interactive `+File`, `+Folder`, `Rename`, and `Delete` actions with keyboard (`Delete` key) and pointer support operating on real disk storage under `/disk`. Text Editor seamlessly loads from and saves to `/disk` files via VFS.
+  - **Volume Consistency Checker (`fsck-lite`)**: Inspects BPB parameters, scans FAT tables for free/used/bad cluster statistics, traverses directory trees validating cluster link integrity, and reports volume health.
 - **Real Processes & Ring 3 Userspace (Phase 21)**: True user/kernel separation and fault isolation:
   - **Per-Process PML4 Address Spaces**: Each process is given an isolated 4-level x86_64 page table. The upper kernel half (entries 1..511) is cloned from boot CR3 to preserve kernel image, direct physical map, stack, and hardware drivers; entry 0 (0..512 GiB) is strictly isolated and private to the user process.
   - **Ring 3 CPU Transition**: Clean transition from CPL 0 to CPL 3 using `iretq` with user data selector `0x1B` (RPL 3) and user code selector `0x23` (RPL 3), initializing a dedicated 16 KiB user stack at 2 GiB (`0x0000_0000_7FFF_0000`).

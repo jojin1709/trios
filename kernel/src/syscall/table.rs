@@ -89,12 +89,12 @@ pub extern "C" fn syscall_dispatch(
                     return len;
                 }
             } else if fd >= 3 {
-                // Write to open ramfs file descriptor
+                // Write to open VFS file descriptor (ramfs or FAT32 disk)
                 let mut table = PROCESS_TABLE.lock();
                 if let Some(proc) = table.iter_mut().find(|p| p.pid == pid) {
                     if let Some(Some(desc)) = proc.fd_table.get_mut(fd) {
                         if desc.writable {
-                            if crate::fs::write_bytes(&desc.path, slice) {
+                            if crate::fs::vfs::write(&desc.path, slice).is_ok() {
                                 desc.offset += len;
                                 return len;
                             }
@@ -125,13 +125,13 @@ pub extern "C" fn syscall_dispatch(
 
             if fd == 0 {
                 // Non-blocking read from stdin (placeholder: 0 bytes ready)
-                0
+                return 0;
             } else if fd >= 3 {
-                // Read from open ramfs file descriptor
+                // Read from open VFS file descriptor
                 let mut table = PROCESS_TABLE.lock();
                 if let Some(proc) = table.iter_mut().find(|p| p.pid == pid) {
                     if let Some(Some(desc)) = proc.fd_table.get_mut(fd) {
-                        if let Some(file_data) = crate::fs::read_bytes(&desc.path) {
+                        if let Some(file_data) = crate::fs::vfs::read(&desc.path) {
                             if desc.offset < file_data.len() {
                                 let available = file_data.len() - desc.offset;
                                 let to_read = available.min(len);
@@ -148,10 +148,8 @@ pub extern "C" fn syscall_dispatch(
                         }
                     }
                 }
-                0
-            } else {
-                0
             }
+            0
         }
 
         SYS_YIELD => {

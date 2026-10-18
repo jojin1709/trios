@@ -40,6 +40,7 @@
 pub mod elf;
 pub mod fat;
 pub mod gpt;
+pub mod vfs;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -261,6 +262,39 @@ impl FileSystem {
             is_dir: true,
             contents: Vec::new(),
         });
+    }
+
+    /// Public helper to ensure a directory exists.
+    pub fn ensure_dir_pub(&mut self, path: &str) {
+        let path = normalize(path);
+        self.ensure_dir(&path);
+    }
+
+    /// Deletes a file or directory and all its descendants from ramfs.
+    pub fn delete(&mut self, path: &str) -> bool {
+        let path = normalize(path);
+        if path.is_empty() {
+            return false;
+        }
+        let old_len = self.nodes.len();
+        let prefix = alloc::format!("{path}/");
+        self.nodes.retain(|n| n.path != path && !n.path.starts_with(&prefix));
+        self.nodes.len() < old_len
+    }
+
+    /// Renames a node in ramfs.
+    pub fn rename(&mut self, old_path: &str, new_path: &str) -> Result<(), &'static str> {
+        let old_path = normalize(old_path);
+        let new_path = normalize(new_path);
+        if old_path.is_empty() || new_path.is_empty() {
+            return Err("invalid path");
+        }
+        if let Some(pos) = self.nodes.iter().position(|n| n.path == old_path) {
+            self.nodes[pos].path = new_path;
+            Ok(())
+        } else {
+            Err("file not found in ramfs")
+        }
     }
 }
 

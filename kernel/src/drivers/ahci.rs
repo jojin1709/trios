@@ -16,6 +16,7 @@ pub const SATA_SIG_ATAPI: u32 = 0xEB140101; // SATAPI drive
 
 /// ATA Commands
 pub const ATA_CMD_READ_DMA_EXT: u8 = 0x25;
+pub const ATA_CMD_WRITE_DMA_EXT: u8 = 0x35;
 pub const FIS_TYPE_REG_H2D: u8 = 0x27;
 
 /// Global AHCI controller instance.
@@ -306,6 +307,94 @@ impl AhciController {
 
         Ok(())
     }
+
+    /// Writes `count` 512-byte sectors starting at `lba` to the specified SATA drive port.
+    pub fn write_sectors(
+        &self,
+        port: u8,
+        lba: u64,
+        count: u16,
+        src_buf: &[u8],
+    ) -> Result<(), &'static str> {
+        let expected_bytes = count as usize * 512;
+        if src_buf.len() < expected_bytes {
+            return Err("source buffer too small for write");
+        }
+
+        let mem = match self.port_mem.get(port as usize).and_then(|m| m.as_ref()) {
+            Some(m) => m,
+            None => return Err("port memory not initialized"),
+        };
+
+        let port_offset = 0x100 + (port as usize * 0x80);
+        let port_ptr = (self.bar5_virt.as_u64() + port_offset as u64) as *mut u32;
+
+        unsafe {
+            // Copy from caller's source buffer to heap DMA buffer
+            core::ptr::copy_nonoverlapping(src_buf.as_ptr(), mem.dma_buf_virt, expected_bytes);
+
+            // Clear Interrupt Status and SERR
+            core::ptr::write_volatile(port_ptr.add(4), 0xFFFF_FFFF);
+            core::ptr::write_volatile(port_ptr.add(12), 0xFFFF_FFFF);
+
+            // Wait until port is not busy
+            let tfd_reg = port_ptr.add(8);
+            let mut spins = 0;
+            while (core::ptr::read_volatile(tfd_reg) & 0x88) != 0 {
+                spins += 1;
+                if spins > 100_000 {
+                    return Err("port busy timeout");
+                }
+            }
+
+            // Command Header 0 (32 bytes at clb_virt)
+            // Bit 6 = Write (1)
+            core::ptr::write_bytes(mem.clb_virt, 0, 32);
+            let clb_u32 = mem.clb_virt as *mut u32;
+            core::ptr::write_volatile(clb_u32.add(0), 5 | (1 << 6) | (1 << 16)); // CFL=5, W=1, PRDTL=1
+            core::ptr::write_volatile(clb_u32.add(1), 0);
+            core::ptr::write_volatile(clb_u32.add(2), mem.ct_phys);
+            core::ptr::write_volatile(clb_u32.add(3), 0);
+
+            // Command Table: Command FIS (64 bytes) + PRDT (at offset 128)
+            core::ptr::write_bytes(mem.ct_virt, 0, 144);
+            let cfis = mem.ct_virt;
+            *cfis.add(0) = FIS_TYPE_REG_H2D;
+            *cfis.add(1) = 0x80; // Command bit
+            *cfis.add(2) = ATA_CMD_WRITE_DMA_EXT;
+            *cfis.add(4) = (lba & 0xFF) as u8;
+            *cfis.add(5) = ((lba >> 8) & 0xFF) as u8;
+            *cfis.add(6) = ((lba >> 16) & 0xFF) as u8;
+            *cfis.add(7) = 1 << 6; // LBA mode
+            *cfis.add(8) = ((lba >> 24) & 0xFF) as u8;
+            *cfis.add(9) = ((lba >> 32) & 0xFF) as u8;
+            *cfis.add(10) = ((lba >> 40) & 0xFF) as u8;
+            *cfis.add(12) = (count & 0xFF) as u8;
+            *cfis.add(13) = ((count >> 8) & 0xFF) as u8;
+
+            // PRDT Entry 0
+            let prdt_u32 = mem.ct_virt.add(128) as *mut u32;
+            core::ptr::write_volatile(prdt_u32.add(0), mem.dma_buf_phys);
+            core::ptr::write_volatile(prdt_u32.add(1), 0);
+            core::ptr::write_volatile(prdt_u32.add(2), 0);
+            core::ptr::write_volatile(prdt_u32.add(3), ((expected_bytes as u32 - 1) & 0x003F_FFFF) | (1 << 31));
+
+            // Issue command: slot 0
+            let ci_reg = port_ptr.add(14);
+            core::ptr::write_volatile(ci_reg, 1);
+
+            // Wait for completion
+            let mut timeout = 0;
+            while (core::ptr::read_volatile(ci_reg) & 1) != 0 {
+                timeout += 1;
+                if timeout > 2_000_000 {
+                    return Err("AHCI write command timeout");
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Helper function to read sectors from disk port 0.
@@ -322,4 +411,20 @@ pub fn read_sector(lba: u64, buf: &mut [u8; 512]) -> Result<(), &'static str> {
 
     let port = ctrl.active_drives[0];
     ctrl.read_sectors(port, lba, 1, buf)
+}
+
+/// Helper function to write sectors to disk port 0.
+pub fn write_sector(lba: u64, buf: &[u8; 512]) -> Result<(), &'static str> {
+    let lock = AHCI_CONTROLLER.lock();
+    let ctrl = match lock.as_ref() {
+        Some(c) => c,
+        None => return Err("AHCI controller not initialized"),
+    };
+
+    if ctrl.active_drives.is_empty() {
+        return Err("no active SATA drives found");
+    }
+
+    let port = ctrl.active_drives[0];
+    ctrl.write_sectors(port, lba, 1, buf)
 }

@@ -226,6 +226,10 @@ impl Terminal {
                 out.push(String::from("ls [dir] - list a directory"));
                 out.push(String::from("cat <path> - print a file"));
                 out.push(String::from("write <path> <text> - write a file"));
+                out.push(String::from("mkdir <path> - create a directory"));
+                out.push(String::from("rm <path> - delete a file"));
+                out.push(String::from("rename <old> <new> - rename file or folder"));
+                out.push(String::from("fsck-lite - verify FAT32 volume consistency"));
                 out.push(String::from("echo <text> - print text"));
                 out.push(String::from("clear - clear scrollback"));
                 out.push(String::from("mem - free heap bytes"));
@@ -256,22 +260,25 @@ impl Terminal {
                 } else {
                     split_first(rest).map_or(rest, |(d, _)| d)
                 };
-                if fs.exists(dir) && fs.read(dir).is_none() && !dir.ends_with('/') && fs.read_bytes(dir).is_some() {
-                    // Regular file: print itself
-                    out.push(String::from(dir));
-                } else if !fs.exists(dir) {
-                    out.push(format!("file not found: {dir}"));
-                } else {
-                    let entries = fs.list(dir);
-                    if entries.is_empty() {
-                        out.push(format!("(empty) {dir}"));
+                match crate::fs::vfs::list_dir(dir) {
+                    Ok(entries) => {
+                        if entries.is_empty() {
+                            out.push(format!("(empty) {dir}"));
+                        }
+                        for entry in entries {
+                            out.push(format!(
+                                "{}{}",
+                                entry.name,
+                                if entry.is_dir { "/" } else { "" }
+                            ));
+                        }
                     }
-                    for entry in entries {
-                        out.push(format!(
-                            "{}{}",
-                            entry.name,
-                            if entry.is_dir { "/" } else { "" }
-                        ));
+                    Err(_) => {
+                        if crate::fs::vfs::exists(dir) {
+                            out.push(String::from(dir));
+                        } else {
+                            out.push(format!("file not found: {dir}"));
+                        }
                     }
                 }
             }
@@ -280,20 +287,23 @@ impl Terminal {
                     out.push(String::from("usage: cat <path>"));
                 } else {
                     let path = split_first(rest).map_or(rest, |(p, _)| p);
-                    match fs.read(path) {
-                        // A missing path, binary file, and a directory all answer
-                        // `None` — neither is text, neither panics.
+                    match crate::fs::vfs::read(path) {
                         None => {
-                            if fs.exists(path) {
+                            if crate::fs::vfs::exists(path) {
                                 out.push(format!("binary file or directory: {path}"));
                             } else {
                                 out.push(format!("file not found: {path}"));
                             }
                         }
-                        Some("") => out.push(String::from("(empty)")),
-                        Some(text) => {
-                            for line in text.split('\n') {
-                                out.push(String::from(line));
+                        Some(bytes) => {
+                            if bytes.is_empty() {
+                                out.push(String::from("(empty)"));
+                            } else if let Ok(text) = core::str::from_utf8(&bytes) {
+                                for line in text.split('\n') {
+                                    out.push(String::from(line));
+                                }
+                            } else {
+                                out.push(format!("binary file ({} bytes): {path}", bytes.len()));
                             }
                         }
                     }
@@ -303,14 +313,97 @@ impl Terminal {
                 if rest.is_empty() {
                     out.push(String::from("usage: write <path> <text...>"));
                 } else {
-                    // Split the path off the *original* remainder so the
-                    // text keeps its internal spacing (splitting on
-                    // whitespace would collapse "a  b" to "a b").
                     let (path, text) = split_first(rest).unwrap_or((rest, ""));
-                    if fs.write(path, text) {
-                        out.push(format!("wrote {path} ({} bytes)", text.len()));
-                    } else {
-                        out.push(format!("cannot write {path}"));
+                    match crate::fs::vfs::write(path, text.as_bytes()) {
+                        Ok(()) => {
+                            if !crate::fs::vfs::is_disk_path(path) {
+                                fs.write(path, text);
+                            }
+                            out.push(format!("wrote {path} ({} bytes)", text.len()));
+                        }
+                        Err(err) => {
+                            out.push(format!("cannot write {path}: {err}"));
+                        }
+                    }
+                }
+            }
+            "mkdir" => {
+                if rest.is_empty() {
+                    out.push(String::from("usage: mkdir <path>"));
+                } else {
+                    let path = split_first(rest).map_or(rest, |(p, _)| p);
+                    match crate::fs::vfs::mkdir(path) {
+                        Ok(()) => {
+                            if !crate::fs::vfs::is_disk_path(path) {
+                                fs.ensure_dir_pub(path);
+                            }
+                            out.push(format!("created directory {path}"));
+                        }
+                        Err(err) => {
+                            out.push(format!("mkdir error: {err}"));
+                        }
+                    }
+                }
+            }
+            "rm" | "delete" => {
+                if rest.is_empty() {
+                    out.push(String::from("usage: rm <path>"));
+                } else {
+                    let path = split_first(rest).map_or(rest, |(p, _)| p);
+                    match crate::fs::vfs::delete(path) {
+                        Ok(()) => {
+                            if !crate::fs::vfs::is_disk_path(path) {
+                                fs.delete(path);
+                            }
+                            out.push(format!("deleted {path}"));
+                        }
+                        Err(err) => {
+                            out.push(format!("delete error: {err}"));
+                        }
+                    }
+                }
+            }
+            "rename" => {
+                let (old, new) = split_first(rest).unwrap_or((rest, ""));
+                let new = split_first(new).map_or(new, |(n, _)| n);
+                if old.is_empty() || new.is_empty() {
+                    out.push(String::from("usage: rename <old_path> <new_path>"));
+                } else {
+                    match crate::fs::vfs::rename(old, new) {
+                        Ok(()) => {
+                            if !crate::fs::vfs::is_disk_path(old) {
+                                let _ = fs.rename(old, new);
+                            }
+                            out.push(format!("renamed {old} -> {new}"));
+                        }
+                        Err(err) => {
+                            out.push(format!("rename error: {err}"));
+                        }
+                    }
+                }
+            }
+            "fsck-lite" | "fsck" => {
+                out.push(String::from("=== TriOS FAT32 Volume Consistency Check ==="));
+                match crate::fs::vfs::fsck_disk() {
+                    Ok(report) => {
+                        out.push(format!("Volume Label:   {}", report.volume_label));
+                        out.push(format!("FAT Type:       {:?}", report.fat_type));
+                        out.push(format!("Total Clusters: {}", report.total_clusters));
+                        out.push(format!("Used Clusters:  {}", report.used_clusters));
+                        out.push(format!("Free Clusters:  {}", report.free_clusters));
+                        out.push(format!("Directories:    {}", report.dir_count));
+                        out.push(format!("Files Checked:  {}", report.file_count));
+                        if report.is_clean && report.errors.is_empty() {
+                            out.push(String::from("Status:         CLEAN (no structural errors found)"));
+                        } else {
+                            out.push(format!("Status:         ERRORS DETECTED ({})", report.errors.len()));
+                            for err in &report.errors {
+                                out.push(format!("  - {err}"));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        out.push(format!("fsck-lite error: {err}"));
                     }
                 }
             }
@@ -373,15 +466,15 @@ impl Terminal {
                     out.push(String::from("usage: elfinfo <path>"));
                 } else {
                     let path = split_first(rest).map_or(rest, |(p, _)| p);
-                    match fs.read_bytes(path) {
+                    match crate::fs::vfs::read(path) {
                         None => out.push(format!("file not found: {path}")),
                         Some(bytes) => {
-                            match crate::fs::elf::parse_header(bytes) {
+                            match crate::fs::elf::parse_header(&bytes) {
                                 Ok(hdr) => {
                                     out.push(format!("ELF64 entry: {:#x}", hdr.entry_point));
                                     out.push(format!("program headers: count={}", hdr.ph_num));
                                     for i in 0..hdr.ph_num {
-                                        if let Some(ph) = crate::fs::elf::parse_program_header(bytes, &hdr, i) {
+                                        if let Some(ph) = crate::fs::elf::parse_program_header(&bytes, &hdr, i) {
                                             out.push(format!(
                                                 "PH#{i}: type={} vaddr={:#x} memsz={}",
                                                 ph.p_type, ph.p_vaddr, ph.p_memsz
@@ -400,10 +493,10 @@ impl Terminal {
                     out.push(String::from("usage: elfrun <path>"));
                 } else {
                     let path = split_first(rest).map_or(rest, |(p, _)| p);
-                    match fs.read_bytes(path) {
+                    match crate::fs::vfs::read(path) {
                         None => out.push(format!("file not found: {path}")),
                         Some(bytes) => {
-                            match crate::sched::process::spawn_process(path, bytes) {
+                            match crate::sched::process::spawn_process(path, &bytes) {
                                 Ok((pid, tid)) => {
                                     out.push(format!(
                                         "spawned Ring 3 process #{pid} (TID #{tid}) from '{path}'"
