@@ -77,11 +77,13 @@ pub struct Selectors {
     pub kernel_data: SegmentSelector,
     #[allow(dead_code)]
     pub user_code: SegmentSelector,
+    #[allow(dead_code)]
     pub user_data: SegmentSelector,
     pub tss: SegmentSelector,
 }
 
 /// Returns the active GDT segment selectors.
+#[allow(dead_code)]
 pub fn selectors() -> &'static Selectors {
     &GDT.1
 }

@@ -142,12 +142,16 @@ impl Process {
 
     /// Allocates and maps virtual user pages via `mmap`.
     pub fn mmap(&mut self, len: usize) -> Result<u64, &'static str> {
-        if len == 0 {
-            return Err("invalid mmap length");
+        if len == 0 || len > 64 * 1024 * 1024 {
+            return Err("invalid mmap length (exceeds 64 MiB limit or zero)");
         }
         let page_count = (len + 4095) / 4096;
+        let bytes_needed = (page_count as u64) * 4096;
+        if self.mmap_next.checked_add(bytes_needed).map_or(true, |end| end > 0x0000_0080_0000_0000) {
+            return Err("mmap out of user virtual address space");
+        }
         let start_addr = self.mmap_next;
-        self.mmap_next += (page_count as u64) * 4096;
+        self.mmap_next += bytes_needed;
 
         for i in 0..page_count {
             let virt = VirtAddr::new(start_addr + (i as u64 * 4096));

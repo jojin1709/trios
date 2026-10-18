@@ -150,6 +150,7 @@ impl FileSystem {
         );
         fs.write_bytes("/bin/hello.elf", &crate::fs::elf::create_sample_elf());
         fs.write_bytes("/bin/fault.elf", &crate::fs::elf::create_fault_elf());
+        fs.write_bytes("/bin/fuzz.elf", &crate::fs::elf::create_fuzz_elf());
         fs
     }
 

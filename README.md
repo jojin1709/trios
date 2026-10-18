@@ -88,6 +88,7 @@ TriOS has completed **Phase 0 through Phase 22**:
 | **Phase 20** | Memory Management | **Done** | Bitmap physical frame allocator, themed page-fault screen, thread stack guard pages, kernel virtual memory API (`map_page`/`unmap_page`/`alloc_pages`/`free_pages`), hybrid slab/size-class heap allocator (32B..2048B), `meminfo` shell command & SysMon physical frame gauges |
 | **Phase 21** | Real Processes & Ring 3 | **Done** | Per-process PML4 page tables (shared kernel half, isolated user half), Ring 3 execution via `iretq`/`sysretq`, full syscall suite (`exit`, `write`, `read`, `yield`, `uptime`, `getpid`, `sleep_ms`, `mmap`, `munmap`, `open`, `close`), strict user pointer validation, process table & teardown, user fault isolation, `ps` & `kill` commands |
 | **Phase 22** | VFS & Persistent Writes | **Done** | Unified Virtual File System (`/` ramfs, `/disk` persistent FAT), AHCI DMA sector writing (`write_sectors`), FAT12/16/32 persistent write engine (create, write, append, delete, mkdir, rename), Editor Save & Files Explorer persistence, `fsck-lite` consistency checker |
+| **Phase 23** | Cleanup, Hardening, Docs | **Done** | UI feature audit (real brightness dimming & DND, cosmetic preview tags), host parser test suite (`cargo test`), Ring 3 syscall fuzz test (`fuzz.elf`), architecture docs (`memory-map.md`, `syscall-table.md`, `boot-sequence.md`) |
 
 ---
 
@@ -144,10 +145,22 @@ TriOS has completed **Phase 0 through Phase 22**:
 - **Built-in Shell Applications**:
   - **SysMon**: Real-time system monitor & task manager with memory gauges, CPU stats, and thread table (`Ctrl+5`).
   - **Browser**: Graphical web browser over TCP/HTTP with address bar, HTML formatting, and scrolling (`Ctrl+4`).
-  - **Terminal**: Interactive CLI supporting commands (`help`, `uptime`, `clear`, `elfinfo`, `elfrun`, `disks`, `gpt`, `fatls`, `netinfo`, `arp`, `ping`, `date`, `dns`, `tcp`, `curl`, `acpi`, `poweroff`, `reboot`, `Ctrl+3`).
-  - **Files Explorer**: Interactive directory browsing of the in-memory virtual filesystem (`Ctrl+1`).
-  - **Text Editor**: Live text buffer editing with load and save integration into `ramfs` (`Ctrl+2`).
-  - **Welcome & Playground**: Demo widgets showcasing buttons, click counters, sliders, and progress bars.
+  - **Terminal**: Interactive CLI supporting the full real command suite (`Ctrl+3`):
+    - File & Disk: `ls`, `cat`, `write`, `mkdir`, `rm`, `rename`, `fsck-lite`, `disks`, `gpt`, `fatls`
+    - System & Memory: `help`, `echo`, `clear`, `mem`, `meminfo`, `uptime`, `date`, `acpi`, `poweroff`, `reboot`
+    - Processes & Executables: `ps`, `kill`, `elfinfo`, `elfrun`
+    - Networking: `netinfo`, `arp`, `ping`, `dns`, `tcp`, `curl`
+  - **Files Explorer**: Interactive directory browsing of unified VFS (`/` ramfs & `/disk` persistent FAT) with file creation, deletion, and renaming (`Ctrl+1`).
+  - **Text Editor**: Live text buffer editing with load and persistent save integration into ramfs and SATA disks (`Ctrl+2`).
+  - **Welcome & Settings**: Control center with live theme accent switching, system diagnostics, and hardware telemetry (`Ctrl+7`).
+- **UI Control Audit & Real vs. Cosmetic Classification (Phase 23)**:
+  - **Brightness Slider**: **REAL** — Dynamically scales framebuffer luminance on `g.back` in `wm.rs::compose` (20%..=100%).
+  - **Night Light Filter**: **REAL** — Dynamic warm color temperature matrix filter attenuating blue channel luminance.
+  - **Do Not Disturb (DND)**: **REAL** — Suppresses desktop toast notifications while active.
+  - **Sound Volume Slider**: **COSMETIC (preview)** — Labeled `Volume (preview)` in Quick Settings & Settings app (audio driver scheduled for Phase 25).
+  - **Sleep Option**: **COSMETIC (preview)** — Labeled `Sleep (preview)` in Start Menu power options.
+  - **Wallpaper Style Picker**: **COSMETIC (preview)** — Labeled `(preview)` in Settings app.
+  - **Resolution Selector**: **REAL Telemetry / COSMETIC Mode Switch (preview)** — Reports live UEFI GOP mode; mode switching is labeled `(preview)`.
 - **Dual Input Drivers**: Native PS/2 mouse and keyboard decoders with automatic arrow-key keyboard mouse emulation if hypervisor mouse capture is unavailable.
 - **Hardware Telemetry & Logging**: Real-time TSC calibration, COM1 serial output, and per-frame performance tracking.
 
@@ -159,7 +172,7 @@ TriOS has completed **Phase 0 through Phase 22**:
 
 ![TriOS Desktop Live Preview](live-desktop.png)
 
-*Live TriOS desktop running inside VirtualBox: Welcome, Terminal, Files Explorer, Editor, and bottom Taskbar.*
+*Live TriOS desktop running inside VirtualBox: Lock screen with RTC clock, TTF typography (Inter + JetBrains Mono), Start menu with real-time app search, Quick Settings with real screen dimming, Files Explorer with persistent FAT disk writes, and unified VFS.*
 
 </div>
 
@@ -239,27 +252,32 @@ D:\trios\
 ├── rust-toolchain.toml        # Pinned nightly compiler & components
 ├── run-gui.ps1                # 1-click interactive VirtualBox launcher
 ├── run-virtualbox.ps1         # Automated test script with COM1 serial dump
+├── docs/                      # Architecture & subsystem documentation
+│   ├── memory-map.md          # Physical bitmap & virtual memory map
+│   ├── syscall-table.md       # Syscall registers, numbers & error codes
+│   └── boot-sequence.md       # Full boot sequence & mermaid diagram
+├── tests/
+│   └── host_parsers.rs        # Host-side cargo unit tests for parsers
 └── kernel/
     ├── Cargo.toml             # Kernel crate dependencies
     └── src/
-        ├── main.rs            # Kernel entry point & desktop event pump
-        ├── sched/             # Phase 5: Multitasking & Scheduler
-        │   ├── mod.rs         # Round-robin scheduler & thread queues
-        │   ├── thread.rs      # Thread control block (TCB) & stack alloc
-        │   └── context.rs     # Naked assembly context switch & trampoline
-        ├── apps/              # Phase 4: Userland Shell Apps
-        │   ├── explorer.rs    # File Explorer
-        │   ├── editor.rs      # Text Editor
-        │   └── terminal.rs    # Command Terminal
-        ├── fs/                # In-memory virtual filesystem (ramfs)
-        ├── gui/               # Window manager, themes, and widgets
-        ├── input/             # PS/2 keyboard & mouse input drivers
-        ├── graphics/          # Double-buffered GOP canvas & font engine
+        ├── main.rs            # Kernel entry point, desktop loop & state
+        ├── allocator.rs       # 32 MiB heap hybrid slab allocator
+        ├── gdt.rs             # GDT, TSS & Ring 3 user descriptors
         ├── interrupts.rs      # IDT, PIC remapping & IRQ handlers
-        ├── gdt.rs             # GDT & Task State Segment (TSS)
-        ├── timer.rs           # PIT 100 Hz timer & uptime clock
-        ├── allocator.rs       # 16 MiB heap linked-list allocator
-        └── serial.rs          # COM1 UART logger
+        ├── timer.rs           # PIT 100 Hz timer & RTC wall clock
+        ├── serial.rs          # 16550 UART serial logger
+        ├── panic.rs           # Themed emergency crash screen
+        ├── acpi.rs            # ACPI tables & power management
+        ├── apps/              # Desktop userland shell applications
+        ├── drivers/           # Hardware drivers (AHCI SATA, Intel e1000)
+        ├── fs/                # Unified VFS, FAT32/16/12 & ELF loader
+        ├── graphics/          # Double-buffered GOP & Fontdue TTF engine
+        ├── gui/               # Glass window manager, dock & icons
+        ├── memory/            # Bitmap allocator & virtual memory API
+        ├── net/               # TCP/IP network stack, HTTP client & DNS
+        ├── sched/             # Preemptive scheduler & Ring 3 processes
+        └── syscall/           # Fast hardware syscall/sysret dispatcher
 ```
 
 ---
@@ -267,49 +285,49 @@ D:\trios\
 ## Boot Sequence
 
 ```mermaid
-graph TD
-    UEFI["UEFI Firmware"] --> Bootloader["bootloader crate v0.11"]
-    Bootloader --> KernelEntry["kernel_main"]
-    KernelEntry --> Serial["COM1 Serial Init"]
-    KernelEntry --> GDT["GDT + TSS (IST1 Stack)"]
-    KernelEntry --> IDT["IDT (#BP, #DF, #PF, #GP, IRQ0..12)"]
-    KernelEntry --> PIC["8259 PIC Remap & Unmask"]
-    KernelEntry --> PIT["PIT 100 Hz Timer"]
-    KernelEntry --> Heap["16 MiB Kernel Heap"]
-    KernelEntry --> Sched["Multitasking Scheduler Init"]
-    KernelEntry --> PS2["PS/2 Keyboard & Mouse Drivers"]
-    KernelEntry --> GFX["GOP Framebuffer Canvas"]
-    KernelEntry --> Desktop["Desktop Event Loop (Compositor)"]
-    Desktop --> Threads["Background Worker Threads"]
+flowchart LR
+    A[UEFI] --> B[GOP]
+    B --> C[GDT/IDT]
+    C --> D[PIC/PIT]
+    D --> E[Frame Allocator]
+    E --> F[Heap]
+    F --> G[PCI/AHCI/FAT]
+    G --> H[NIC]
+    H --> I[ACPI]
+    I --> J[GUI]
+    J --> K[Lock Screen]
 ```
+
+Detailed boot sequence documentation and stage breakdown can be found in [`docs/boot-sequence.md`](docs/boot-sequence.md).
 
 ---
 
 ## Roadmap
 
-- [x] **Phase 0**: UEFI Bootloader & raw image packaging pipeline
-- [x] **Phase 1**: Core kernel fundamentals (GDT, TSS, IDT, PIC, PIT, Heap, COM1 Serial)
-- [x] **Phase 2**: Graphics canvas, font rendering, double-buffered framebuffers
-- [x] **Phase 3**: PS/2 keyboard & mouse input drivers, window manager & composited GUI
-- [x] **Phase 4**: In-memory virtual filesystem (ramfs), Terminal, Text Editor, Files Explorer
-- [x] **Phase 5**: Kernel threads, context switching & round-robin preemptive scheduler
-- [x] **Phase 6**: Ring 3 User Descriptors, TSS RSP0 switching, fast `syscall`/`sysret` MSRs & dispatcher
-- [x] **Phase 7**: PCI bus enumeration & AHCI SATA block storage driver
-- [x] **Phase 8**: Standalone ELF64 executable loader & live execution via terminal (`elfinfo`, `elfrun`)
-- [x] **Phase 9**: Persistent FAT32 / FAT16 / FAT12 filesystem & GPT partition mounting
-- [x] **Phase 10**: CMOS Real-Time Clock (RTC) date/time hardware decoder
-- [x] **Phase 11**: UDP protocol stack & RFC 1035 bare-metal DNS client resolver
-- [x] **Phase 12**: ACPI table discovery (RSDP, XSDT, FADT, MADT, DSDT) & hardware power management (`poweroff`, `reboot`)
-- [x] **Phase 13**: Full RFC 793 TCP protocol stack (SYN/ACK 3-way handshake) & bare-metal HTTP/1.0 client (`curl`)
-- [x] **Phase 14**: Interactive GUI Web Browser application (`Ctrl+4`)
-- [x] **Phase 15**: Real-time System Monitor & Task Manager with live CPU, memory gauges, thread table (`Ctrl+5`)
-- [x] **Phase 16**: Modern Desktop UI/UX overhaul & TriSweeper retro desktop puzzle game (`Ctrl+6`)
-- [x] **Phase 17**: Display & Visual Foundation (1080p GOP, futuristic glass theme, cached gradient wallpaper, floating dock)
-- [x] **Phase 18**: Desktop Experience (vector icons, Start Menu with live search, Quick Settings with Night Light, desktop selection, context menus, toast notifications, Alt+Tab)
-- [x] **Phase 19**: Typography & System Apps (Fontdue TTF vector typography, Settings App `Ctrl+7`, boot splash, lock screen `Ctrl+L`)
-- [x] **Phase 20**: Memory Management (bitmap frame allocator, themed page fault screen, thread guard pages, slab allocator 32B..2048B, `meminfo`)
-- [x] **Phase 21**: Real Processes (per-process PML4 page tables, Ring 3 `iretq`/`sysretq`, syscall suite, user pointer validation, fault isolation, `ps` & `kill`)
-- [x] **Phase 22**: VFS & Persistent Writes (unified VFS `/` ramfs & `/disk` FAT, AHCI sector write DMA, multi-FAT write engine, `fsck-lite`)
+- [x] **Phase 0**: Bootloader & Image Build (UEFI boot, direct physical memory map, dual-target cargo workspace)
+- [x] **Phase 1**: Bare-Metal CPU Core (GDT, TSS IST1 stack, IDT, 8259 PIC remapping, PIT 100 Hz, COM1 UART serial, 32 MiB heap)
+- [x] **Phase 2**: Framebuffer & Graphics Canvas (Double-buffered GOP canvas, 8x8 font, graphics primitives)
+- [x] **Phase 3**: Input & Window Manager (PS/2 keyboard & mouse drivers, event queue, z-ordered window manager)
+- [x] **Phase 4**: Shell, VFS & Text Fields (In-memory ramfs, TextInput, Files Explorer, Text Editor, Terminal shell)
+- [x] **Phase 5**: Preemptive Multitasking & Scheduler (Thread control blocks, preemptive scheduler, context switching)
+- [x] **Phase 6**: User Descriptors & Fast Syscalls (GDT User DPL-3, TSS RSP0 privilege stack, IA32 MSRs, fast `syscall` dispatcher)
+- [x] **Phase 7**: PCI Bus & AHCI SATA Driver (PCI scanner, AHCI HBA MMIO, SATA disk device detection)
+- [x] **Phase 8**: Standalone ELF Loader & Exec (ELF64 header & PT_LOAD parser, page permissions, `elfinfo`, `elfrun`)
+- [x] **Phase 9**: Persistent Storage & FAT VFS (GPT parser, AHCI DMA sector reading, FAT12/16/32 volume mounter, `gpt`, `fatls`, `disks`)
+- [x] **Phase 10**: Intel E1000 NIC & Network Stack (Intel 82540EM MMIO driver, RX/TX DMA rings, Ethernet II, ARP, IPv4, ICMP ping)
+- [x] **Phase 11**: UDP, DNS Resolver & CMOS RTC (UDP framing, RFC 1035 DNS client `dns`, hardware CMOS RTC driver `date`, live clock)
+- [x] **Phase 12**: ACPI Subsystem & Power Control (RSDP/XSDT parser, FADT PM1a, MADT CPU cores, ACPI S5 `poweroff`, `reboot`, `acpi`)
+- [x] **Phase 13**: TCP Protocol & HTTP/1.0 Client (RFC 793 TCP state machine, 3-way handshake, bare-metal `curl <url>`)
+- [x] **Phase 14**: Desktop Web Browser Application (GUI browser `Ctrl+4` with address bar, HTML tokenizer, layout)
+- [x] **Phase 15**: System Monitor & Task Manager (Real-time CPU/RAM gauges, thread table, compositor FPS telemetry `Ctrl+5`)
+- [x] **Phase 16**: Modern Desktop UI/UX & TriSweeper (Desktop shortcut icons, window controls, TriSweeper game `Ctrl+6`)
+- [x] **Phase 17**: Display & Visual Foundation (Native 1080p GOP, futuristic glass theme, cached gradient wallpaper, floating dock)
+- [x] **Phase 18**: Desktop Experience (Vector icons, Start menu with search, Quick Settings with Night Light, toast queue, Alt+Tab)
+- [x] **Phase 19**: Typography & System Apps (Fontdue TTF Inter/JetBrains Mono, Settings app `Ctrl+7`, lock screen `Ctrl+L`)
+- [x] **Phase 20**: Memory Management (Bitmap physical frame allocator, themed page fault screen, thread guard pages, slab allocator 32B..2048B, `meminfo`)
+- [x] **Phase 21**: Real Processes & Ring 3 (Per-process PML4 page tables, Ring 3 `iretq`/`sysretq`, syscall suite, user pointer validation, fault isolation, `ps`, `kill`)
+- [x] **Phase 22**: VFS & Persistent Writes (Unified VFS `/` ramfs & `/disk` FAT, AHCI sector write DMA, multi-FAT write engine, `fsck-lite`)
+- [x] **Phase 23**: Cleanup, Hardening, Docs (UI feature audit, real brightness dimming & DND, host parser tests, Ring 3 syscall fuzzing, architecture docs)
 
 ---
 

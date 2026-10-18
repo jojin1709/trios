@@ -1143,7 +1143,7 @@ impl WindowManager {
 
         // 2. Power popup menu items check
         if self.start_menu.power_menu_open {
-            let pm_r = Rect::new(sm_r.right() - 146, sm_r.y + sm_r.h - 174, 130, 114);
+            let pm_r = Rect::new(sm_r.right() - 166, sm_r.y + sm_r.h - 174, 150, 114);
             if pm_r.contains(cx, cy) {
                 let row = ((cy - pm_r.y) / 28).clamp(0, 3);
                 match row {
@@ -1153,7 +1153,7 @@ impl WindowManager {
                         self.start_menu.open = false;
                     }
                     1 => {
-                        crate::gui::notify("Power", "System sleeping...", crate::gui::NotificationKind::Info);
+                        crate::gui::notify("Power", "System sleep (preview)", crate::gui::NotificationKind::Info);
                         self.start_menu.power_menu_open = false;
                         self.start_menu.open = false;
                     }
@@ -1669,7 +1669,9 @@ impl WindowManager {
             Self::draw_context_menu(g, theme, menu);
         }
 
-        Self::draw_notifications(g, theme, self.screen_w);
+        if !self.quick_settings.dnd_on {
+            Self::draw_notifications(g, theme, self.screen_w);
+        }
 
         if self.alt_tab.open {
             self.draw_alt_tab(g, theme);
@@ -1681,6 +1683,16 @@ impl WindowManager {
                 chunk[0] = (chunk[0] as u16 * 210 / 256) as u8;
                 chunk[1] = (chunk[1] as u16 * 242 / 256) as u8;
                 chunk[2] = (chunk[2] as u16 * 255 / 256).min(255) as u8;
+            }
+        }
+
+        // Real screen brightness dimming: scale pixel luminance by brightness level (20%..=100%)
+        let brightness = self.quick_settings.brightness.clamp(20, 100) as u16;
+        if brightness < 100 {
+            for chunk in g.back.chunks_exact_mut(4) {
+                chunk[0] = (chunk[0] as u16 * brightness / 100) as u8;
+                chunk[1] = (chunk[1] as u16 * brightness / 100) as u8;
+                chunk[2] = (chunk[2] as u16 * brightness / 100) as u8;
             }
         }
 
@@ -2225,7 +2237,7 @@ impl WindowManager {
 
         // 8. Power popup menu
         if self.start_menu.power_menu_open {
-            let pm_w = 130;
+            let pm_w = 150;
             let pm_h = 114;
             let pm_x = sm.right() - pm_w - 16;
             let pm_y = sm.y + sm.h - pm_h - 60;
@@ -2234,7 +2246,7 @@ impl WindowManager {
             g.fill_rounded_rect(pm_x, pm_y, pm_w as u32, pm_h as u32, BUTTON_RADIUS, theme.surface_hi);
             g.draw_rounded_rect(pm_x, pm_y, pm_w as u32, pm_h as u32, BUTTON_RADIUS, theme.border);
 
-            let options = ["Lock", "Sleep", "Restart", "Shut down"];
+            let options = ["Lock", "Sleep (preview)", "Restart", "Shut down"];
             for (oi, &opt) in options.iter().enumerate() {
                 let oy = pm_y + 4 + oi as i32 * 26;
                 let or = Rect::new(pm_x + 4, oy, pm_w - 8, 24);
@@ -2345,7 +2357,7 @@ impl WindowManager {
         // Volume Slider
         let track_w = qs.w - 40;
         let v_val = self.quick_settings.volume as i32;
-        g.draw_text(qs.x + 20, qs.y + 122, "Volume", theme.text, None, 1);
+        g.draw_text(qs.x + 20, qs.y + 122, "Volume (preview)", theme.text, None, 1);
         let v_txt = alloc::format!("{v_val}%");
         g.draw_text(qs.right() - 44, qs.y + 122, &v_txt, theme.text_dim, None, 1);
 

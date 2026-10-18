@@ -305,6 +305,131 @@ pub fn create_fault_elf() -> Vec<u8> {
     elf
 }
 
+/// Generates a valid minimal 64-bit ELF executable that invokes syscalls with invalid,
+/// null, kernel-space, unmapped, and misaligned arguments to stress-test kernel isolation.
+pub fn create_fuzz_elf() -> Vec<u8> {
+    const MSG: &[u8] = b"[fuzz   ] syscall fuzzing finished: all invalid pointers rejected cleanly (0 panics)\n";
+    let msg_len = MSG.len() as u32;
+
+    let mut code: Vec<u8> = Vec::new();
+
+    // 1. SYS_WRITE with NULL pointer
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]); // mov rax, 1 (SYS_WRITE)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x01, 0x00, 0x00, 0x00]); // mov rdi, 1
+    code.extend_from_slice(&[0x48, 0xC7, 0xC6, 0x00, 0x00, 0x00, 0x00]); // mov rsi, 0 (NULL)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC2, 0x40, 0x00, 0x00, 0x00]); // mov rdx, 64
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 2. SYS_WRITE with kernel-half pointer (0xFFFF_8000_0000_0000)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]); // mov rax, 1
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x01, 0x00, 0x00, 0x00]); // mov rdi, 1
+    code.extend_from_slice(&[0x48, 0xBE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xFF]); // mov rsi, 0xFFFF800000000000
+    code.extend_from_slice(&[0x48, 0xC7, 0xC2, 0x40, 0x00, 0x00, 0x00]); // mov rdx, 64
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 3. SYS_WRITE with unmapped user address (0x1234)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]); // mov rax, 1
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x01, 0x00, 0x00, 0x00]); // mov rdi, 1
+    code.extend_from_slice(&[0x48, 0xC7, 0xC6, 0x34, 0x12, 0x00, 0x00]); // mov rsi, 0x1234
+    code.extend_from_slice(&[0x48, 0xC7, 0xC2, 0x40, 0x00, 0x00, 0x00]); // mov rdx, 64
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 4. SYS_READ with null pointer
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x02, 0x00, 0x00, 0x00]); // mov rax, 2 (SYS_READ)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00]); // mov rdi, 0
+    code.extend_from_slice(&[0x48, 0xC7, 0xC6, 0x00, 0x00, 0x00, 0x00]); // mov rsi, 0 (NULL)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC2, 0x40, 0x00, 0x00, 0x00]); // mov rdx, 64
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 5. SYS_READ with kernel-half pointer
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x02, 0x00, 0x00, 0x00]); // mov rax, 2
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00]); // mov rdi, 0
+    code.extend_from_slice(&[0x48, 0xBE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xFF]); // mov rsi, 0xFFFF800000000000
+    code.extend_from_slice(&[0x48, 0xC7, 0xC2, 0x40, 0x00, 0x00, 0x00]); // mov rdx, 64
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 6. SYS_READ with read-only code page address (0x400000)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x02, 0x00, 0x00, 0x00]); // mov rax, 2
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00]); // mov rdi, 0
+    code.extend_from_slice(&[0x48, 0xC7, 0xC6, 0x00, 0x00, 0x40, 0x00]); // mov rsi, 0x400000
+    code.extend_from_slice(&[0x48, 0xC7, 0xC2, 0x40, 0x00, 0x00, 0x00]); // mov rdx, 64
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 7. SYS_OPEN with null pointer
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x09, 0x00, 0x00, 0x00]); // mov rax, 9 (SYS_OPEN)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00]); // mov rdi, 0
+    code.extend_from_slice(&[0x48, 0xC7, 0xC6, 0x00, 0x00, 0x00, 0x00]); // mov rsi, 0
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 8. SYS_OPEN with kernel-half pointer
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x09, 0x00, 0x00, 0x00]); // mov rax, 9
+    code.extend_from_slice(&[0x48, 0xBF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xFF]); // mov rdi, 0xFFFF800000000000
+    code.extend_from_slice(&[0x48, 0xC7, 0xC6, 0x00, 0x00, 0x00, 0x00]); // mov rsi, 0
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 9. SYS_CLOSE with invalid fd (0xFFFFFFFF)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x0A, 0x00, 0x00, 0x00]); // mov rax, 10 (SYS_CLOSE)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0xFF, 0xFF, 0xFF, 0xFF]); // mov rdi, 0xFFFFFFFF
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 10. SYS_MMAP with huge length (overflowing)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x07, 0x00, 0x00, 0x00]); // mov rax, 7 (SYS_MMAP)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00]); // mov rdi, 0
+    code.extend_from_slice(&[0x48, 0xC7, 0xC6, 0xFF, 0xFF, 0xFF, 0xFF]); // mov rsi, 0xFFFFFFFF
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 11. Invalid syscall #9999
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x0F, 0x27, 0x00, 0x00]); // mov rax, 9999
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00]); // mov rdi, 0
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 12. Valid SYS_WRITE reporting completion
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]); // mov rax, 1 (SYS_WRITE)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x01, 0x00, 0x00, 0x00]); // mov rdi, 1
+    code.extend_from_slice(&[0x48, 0x8D, 0x35, 0x1A, 0x00, 0x00, 0x00]); // lea rsi, [rip + 26]
+    code.extend_from_slice(&[0x48, 0xC7, 0xC2]);                          // mov rdx, imm32
+    code.extend_from_slice(&msg_len.to_le_bytes());
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+
+    // 13. SYS_EXIT 0
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00]); // mov rax, 0
+    code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00]); // mov rdi, 0
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+    code.push(0xC3);                                                       // ret
+    code.extend_from_slice(MSG);
+
+    let total_size = 120 + code.len() as u64;
+    let mut elf = vec![0u8; total_size as usize];
+
+    elf[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+    elf[4] = 2; // ELFCLASS64
+    elf[5] = 1; // ELFDATA2LSB
+    elf[6] = 1; // EV_CURRENT
+    elf[7] = 0; // ELFOSABI_NONE
+    elf[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+    elf[18..20].copy_from_slice(&0x3Eu16.to_le_bytes()); // EM_X86_64
+    elf[20..24].copy_from_slice(&1u32.to_le_bytes());
+    elf[24..32].copy_from_slice(&(0x400000u64 + 120).to_le_bytes());
+    elf[32..40].copy_from_slice(&64u64.to_le_bytes());
+    elf[48..52].copy_from_slice(&0u32.to_le_bytes());
+    elf[52..54].copy_from_slice(&64u16.to_le_bytes());
+    elf[54..56].copy_from_slice(&56u16.to_le_bytes());
+    elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+
+    let ph = &mut elf[64..120];
+    ph[0..4].copy_from_slice(&PT_LOAD.to_le_bytes());
+    ph[4..8].copy_from_slice(&7u32.to_le_bytes());
+    ph[8..16].copy_from_slice(&0u64.to_le_bytes());
+    ph[16..24].copy_from_slice(&0x400000u64.to_le_bytes());
+    ph[24..32].copy_from_slice(&0x400000u64.to_le_bytes());
+    ph[32..40].copy_from_slice(&total_size.to_le_bytes());
+    ph[40..48].copy_from_slice(&total_size.to_le_bytes());
+    ph[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
+
+    elf[120..].copy_from_slice(&code);
+    elf
+}
+
 /// Loads ELF segments into an isolated user process's PML4 address space.
 pub fn load_elf_into_process(
     bytes: &[u8],

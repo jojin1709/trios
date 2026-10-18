@@ -141,7 +141,7 @@ impl Settings {
         // Wallpaper toggle button (11)
         widgets.push(Widget::Button(Button::new(
             Rect::new(0, -200, 0, 0),
-            "Cycle Wallpaper Style",
+            "Cycle Wallpaper (preview)",
         )));
 
         // Transparency toggle (12)
@@ -207,7 +207,7 @@ impl Settings {
                 set_lbl(wm, self.win, SET_LBL_ROW2, "Hardware Refresh: 60 Hz VSync Buffered");
                 set_lbl(wm, self.win, SET_LBL_ROW3, "Compositor: Hardware Alpha Blended Window Manager");
                 set_lbl(wm, self.win, SET_LBL_ROW4, "Typography: Fontdue TTF Vector Rendering (Inter + JetBrains Mono)");
-                set_lbl(wm, self.win, SET_LBL_ROW5, "Available GOP Modes: Mode 0 (1920x1080) [Active]");
+                set_lbl(wm, self.win, SET_LBL_ROW5, "Available GOP Modes: Mode 0 (1920x1080) [Active, switch preview]");
                 set_lbl(wm, self.win, SET_LBL_ROW6, "Status: Native Hardware Acceleration Active");
             }
             SettingsTab::Personalization => {
@@ -221,7 +221,7 @@ impl Settings {
                     1 => "Matrix Dot Grid",
                     _ => "Cosmic Aurora Wave",
                 };
-                set_lbl(wm, self.win, SET_LBL_ROW3, format!("Current Wallpaper: {wall_name}"));
+                set_lbl(wm, self.win, SET_LBL_ROW3, format!("Current Wallpaper: {wall_name} (preview)"));
                 set_lbl(wm, self.win, SET_LBL_ROW4, "Glassmorphism & Transparency:");
                 let trans_name = if self.transparency_enabled { "Enabled (16px blur + dynamic shadow)" } else { "Disabled (Opaque surfaces)" };
                 set_lbl(wm, self.win, SET_LBL_ROW5, format!("Window Surfaces: {trans_name}"));
@@ -256,10 +256,10 @@ impl Settings {
                 set_lbl(wm, self.win, SET_LBL_ROW6, "Protocol Stack:  ARP cache, IPv4 framing, ICMP ping, TCP/HTTP");
             }
             SettingsTab::Sound => {
-                set_lbl(wm, self.win, SET_LBL_TITLE, "Sound & Audio Output");
+                set_lbl(wm, self.win, SET_LBL_TITLE, "Sound & Audio Output (preview)");
                 set_lbl(wm, self.win, SET_LBL_SUB, "Intel High Definition Audio (HDA) Subsystem");
                 set_lbl(wm, self.win, SET_LBL_ROW0, "Output Device:   Intel ICH HDA Codec (PCI Dev 0x1B)");
-                set_lbl(wm, self.win, SET_LBL_ROW1, format!("Master Volume:   {}% (Active)", self.volume_level));
+                set_lbl(wm, self.win, SET_LBL_ROW1, format!("Master Volume:   {}% (preview)", self.volume_level));
                 set_lbl(wm, self.win, SET_LBL_ROW2, "Mute State:      Unmuted (Normal output)");
                 set_lbl(wm, self.win, SET_LBL_ROW3, "Sample Rate:     48.0 kHz 24-bit Stereo Studio Quality");
                 set_lbl(wm, self.win, SET_LBL_ROW4, "Audio Buffer:    Zero-latency DMA Stream FIFO");

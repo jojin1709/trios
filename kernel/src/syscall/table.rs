@@ -21,10 +21,22 @@ pub const SYS_CLOSE: usize = 10;
 static SYSCALL_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Helper to read a null-terminated string from a validated user space pointer.
-unsafe fn read_user_string(ptr: *const u8, max_len: usize) -> Result<alloc::string::String, &'static str> {
+unsafe fn read_user_string(
+    pml4: x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>,
+    ptr: *const u8,
+    max_len: usize,
+    is_user: bool,
+) -> Result<alloc::string::String, &'static str> {
+    if ptr.is_null() {
+        return Err("null pointer dereference rejected");
+    }
     let mut bytes = alloc::vec::Vec::new();
     for i in 0..max_len {
-        let b = unsafe { *ptr.add(i) };
+        let addr = (ptr as usize).checked_add(i).ok_or("pointer arithmetic overflow")?;
+        if is_user {
+            validate_user_buffer(pml4, addr, 1, false)?;
+        }
+        let b = unsafe { *(addr as *const u8) };
         if b == 0 {
             break;
         }
@@ -192,14 +204,7 @@ pub extern "C" fn syscall_dispatch(
             let path_ptr = arg1;
             let flags = arg2;
 
-            if pid != 0 {
-                if let Err(err) = validate_user_buffer(pml4, path_ptr, 1, false) {
-                    serial_println!("[syscall] SYS_OPEN path pointer validation failed: {err}");
-                    return usize::MAX;
-                }
-            }
-
-            let path = match unsafe { read_user_string(path_ptr as *const u8, 128) } {
+            let path = match unsafe { read_user_string(pml4, path_ptr as *const u8, 128, pid != 0) } {
                 Ok(p) => p,
                 Err(err) => {
                     serial_println!("[syscall] SYS_OPEN string read failed: {err}");
