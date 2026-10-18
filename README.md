@@ -83,11 +83,18 @@ TriOS has completed **Phase 0 through Phase 17**:
 | **Phase 15** | System Monitor & Task Manager | **Done** | Real-time CPU/RAM gauges, thread table, compositor FPS telemetry, and background worker spawning (`Ctrl+5`) |
 | **Phase 16** | Modern Desktop UI/UX & TriSweeper | **Done** | Desktop shortcut icons, modern taskbar with active indicators, window controls (`_`, `□`, `✕`), and TriSweeper puzzle game (`Ctrl+6`) |
 | **Phase 17** | Display + Visual Foundation | **Done** | Native 1080p GOP resolution, futuristic glass theme (`gui/theme.rs`), cached vertical gradient wallpaper with dot grid & faint emblem, floating centered dock, 32px titlebars with 10px rounded corners & drop shadows, floating toast, and 32 MiB heap |
+| **Phase 18** | Desktop Experience | **Done** | Procedural vector icons (`gui/icons.rs`), Start Menu with app search & ACPI power popup, Quick Settings tray with Night Light filter & sliders, desktop icon selection & double-click, reusable Context Menu, top-right Toast notification system, Alt+Tab switcher & Super key |
 
 ---
 
 ## Key Features
 
+- **Desktop Experience & Procedural Vector Icons (Phase 18)**: Complete high-resolution desktop experience with 12 handcrafted vector icons (`gui/icons.rs`) drawn at 32x32 and 48x48 (`This PC`, `Files`, `Editor`, `Terminal`, `Browser`, `SysMon`, `Mines`, `Settings`, `Trash`, and file-type badges `[DIR]`, `[RS]`, `[TXT]`, `[ELF]`) using theme tokens.
+- **Desktop Icon Interaction & Context Menu (Phase 18)**: Single-click desktop icon selection with rounded rect highlight, double-click application launch via PIT monotonic ticks, centered labels with subtle drop shadows. Right-click desktop opens a sleek glass context menu (`New Folder`, `Refresh`, `Display Settings`, `Open Terminal here`). Files Explorer and Text Editor also provide dedicated context menus.
+- **Glass Start Menu with Live App Search (Phase 18)**: Dock Start button or Windows/Super key opens an elevated glass panel above the dock. Includes real-time search filtering across 12 pinned applications, 4x3 pinned application grid, recent items list, user profile chip (`"Jojin"`, Administrator), and ACPI power popup (`Sleep`, `Restart` via ACPI reset, `Shut down` via ACPI S5 poweroff). Dismissable with Esc or clicking outside.
+- **Quick Settings & Night Light Color Filter (Phase 18)**: Dock system tray toggle opens an interactive glass Quick Settings panel with quick-action tiles for Network, Do Not Disturb, and Night Light (which dynamically applies an authentic warm tint filter during screen composition), plus interactive Volume and Brightness level sliders.
+- **Toast Notification Queue (Phase 18)**: Multi-toast notification system stacking up to 3 glass notification cards at the top-right with 4-second auto-dismissal, glowing cyan status bars, and distinct severity kinds (`Info`, `Success`, `Warning`, `Error`). Connected to network link events, background worker completion, and Text Editor file saves via `kernel::gui::notify()`.
+- **Alt+Tab Window Switcher (Phase 18)**: Window switching overlay that previews open window titles and icons, cycles with Tab, and activates the selected window upon Alt release.
 - **Futuristic Glass UI & 1080p Visual Foundation (Phase 17)**: Native 1920x1080 high-definition desktop layout backed by a 32 MiB kernel heap. Implements a curated design system in `kernel/src/gui/theme.rs` (`#0B0F1A` base, `#141B2D` surface, `#1C2540` highlight, cyan/violet accents, 10px window radius, 6px button radius, 32px titlebar, 56px dock, 16px drop shadows). Features a procedural vertical gradient wallpaper with a subtle 24px dot-matrix grid and a faint geometric TriOS triad logo, rendered once and cached for 60+ FPS compositing.
 - **Floating Centered Glass Dock & System Tray (Phase 17)**: Elevated floating dock (`56px` height) centered at bottom with rounded glass aesthetic. Hosts the stylized TriOS start menu button, 6 modern procedural app icons (`Files`, `Editor`, `Terminal`, `Browser`, `SysMon`, `Mines`) with hover highlights and running status dots, system separator, network signal bars, audio speaker, and 2-line live IST clock (`UTC+5:30`) and date.
 - **Glass Window Chrome & Modern Window Controls (Phase 17)**: 32px window titlebars with subtle borders, 10px rounded corners, gradient focus accenting, elevation drop shadows, and 3 titlebar control buttons: Minimize (`—`), Maximize/Restore (`□` / `❐`), and Close (`✕`).
@@ -264,6 +271,13 @@ graph TD
 - [x] **Phase 13**: Full RFC 793 TCP protocol stack (SYN/ACK 3-way handshake) & bare-metal HTTP/1.0 client (`curl`)
 - [x] **Phase 14**: Interactive GUI Web Browser application (`Ctrl+4`)
 - [x] **Phase 15**: Real-time System Monitor & Task Manager with live CPU, memory gauges, thread table (`Ctrl+5`)
+- [x] **Phase 16**: Modern Desktop UI/UX overhaul & TriSweeper retro desktop puzzle game (`Ctrl+6`)
+- [x] **Phase 17**: Display & Visual Foundation (1080p GOP, futuristic glass theme, cached gradient wallpaper, floating dock)
+- [x] **Phase 18**: Desktop Experience (vector icons, Start Menu with live search, Quick Settings with Night Light, desktop selection, context menus, toast notifications, Alt+Tab)
+- [ ] **Phase 19**: Typography & System Apps (TTF font renderer, Settings App Ctrl+7, boot splash, lock/login screen Win+L)
+- [ ] **Phase 20**: Memory Management (bitmap frame allocator, themed page fault handler, guard pages, kernel virt mem API, slab allocator)
+- [ ] **Phase 21**: Real Processes (per-process PML4, ring 3 ELF, syscall table & pointer validation, `ps`, `kill`, hello.elf)
+- [ ] **Phase 22**: VFS & Persistent Writes (mount points `/` ramfs, `/disk` FAT32 write/create/delete/mkdir/rename, fsck-lite)
 
 ---
 

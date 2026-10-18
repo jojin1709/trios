@@ -581,6 +581,7 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
             match event {
                 // -- tick: heartbeat, live About labels, progress sweep ---
                 Event::Tick(n) => {
+                    wm.tick_count = n;
                     let sec = n / timer::TICKS_PER_SECOND;
                     if sec > reported {
                         reported = sec;
@@ -735,6 +736,10 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                 // -- and arrows/space/enter drive the keyboard cursor ---
                 // -- fallback (mouse irq count = 0) ---------------------
                 Event::Key(k) => {
+                    if wm.handle_global_key(k) {
+                        dirty = true;
+                        continue;
+                    }
                     if k.pressed {
                         // Ctrl+1/2/3 — the taskbar's keyboard twin: focus
                         // Files / Editor / Terminal. Checked *first*,
@@ -1046,6 +1051,13 @@ extern "C" fn background_worker() {
         serial_println!(
             "[worker ] alive: iteration #{iteration}, uptime via sys_uptime={uptime}s"
         );
+        if iteration == 1 {
+            gui::notify(
+                "Task Finished",
+                "Worker background task completed",
+                gui::NotificationKind::Info,
+            );
+        }
     }
 }
 
@@ -1087,6 +1099,12 @@ fn init_network(phys_offset: VirtAddr) {
                 // Broadcast gratuitous ARP so the host/network learns our MAC
                 let our_ip = net::NET.lock().ip;
                 let _ = net::send_arp_request(our_ip);
+
+                gui::notify(
+                    "Network Connected",
+                    "Intel E1000 Gigabit NIC active",
+                    gui::NotificationKind::Success,
+                );
             }
             Err(e) => {
                 serial_println!("[net    ] E1000 initialization failed: {e}");

@@ -98,6 +98,8 @@ pub enum KeyCode {
     Ctrl,
     Alt,
     CapsLock,
+    /// Windows / Super / GUI key (Phase 18).
+    Super,
     /// A scancode we don't map (or a make/break sequence from an
     /// extended key we don't care about yet). Kept so callers can log
     /// unknowns instead of silently swallowing them.
@@ -123,6 +125,7 @@ impl fmt::Display for KeyCode {
             KeyCode::Ctrl => f.write_str("Ctrl"),
             KeyCode::Alt => f.write_str("Alt"),
             KeyCode::CapsLock => f.write_str("CapsLock"),
+            KeyCode::Super => f.write_str("Super"),
             KeyCode::Unknown(b) => write!(f, "Key#{b:#04x}"),
         }
     }

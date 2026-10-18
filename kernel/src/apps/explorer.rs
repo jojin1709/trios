@@ -263,12 +263,23 @@ impl Explorer {
         for i in 0..EX_ROW_COUNT {
             let text = match entries.get(i) {
                 Some(entry) => {
-                    let mut name = clip(&entry.name, NAME_CLIP);
+                    let tag = if entry.is_dir {
+                        "[DIR]"
+                    } else if entry.name.ends_with(".rs") {
+                        "[RS ]"
+                    } else if entry.name.ends_with(".txt") {
+                        "[TXT]"
+                    } else if entry.name.ends_with(".elf") {
+                        "[ELF]"
+                    } else {
+                        "[FILE]"
+                    };
+                    let mut name = clip(&entry.name, NAME_CLIP.saturating_sub(7));
                     if entry.is_dir {
                         name.push('/');
                     }
                     let mark = if i == self.selected { "> " } else { "  " };
-                    format!("{mark}{name}")
+                    format!("{mark}{tag} {name}")
                 }
                 None => String::new(),
             };

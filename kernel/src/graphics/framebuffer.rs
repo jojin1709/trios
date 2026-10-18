@@ -462,7 +462,7 @@ impl Graphics {
 }
 
 /// Simple integer square root for rounded corner geometry.
-fn int_sqrt(n: i32) -> i32 {
+pub(crate) fn int_sqrt(n: i32) -> i32 {
     if n <= 0 {
         return 0;
     }

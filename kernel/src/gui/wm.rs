@@ -44,6 +44,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use super::icons::Icon;
 use super::theme::Theme;
 use super::widgets::{Widget, WidgetOutcome};
 use crate::graphics::{Color, Graphics};
@@ -51,9 +52,117 @@ use crate::input::{self, mouse};
 
 #[allow(unused_imports)]
 pub use super::theme::{
-    BUTTON_RADIUS, DOCK_H, SHADOW_BLUR, TITLEBAR_H, UTC_OFFSET_HOURS, UTC_OFFSET_MINS,
+    BUTTON_RADIUS, CONTEXT_MENU_W, DOCK_H, QUICK_SETTINGS_H, QUICK_SETTINGS_W, SHADOW_BLUR,
+    START_MENU_H, START_MENU_W, TITLEBAR_H, TOAST_H, TOAST_W, UTC_OFFSET_HOURS, UTC_OFFSET_MINS,
     WINDOW_RADIUS,
 };
+
+/// Context menu item (Phase 18).
+#[derive(Debug, Clone)]
+pub struct ContextMenuItem {
+    pub id: u32,
+    pub label: String,
+    pub shortcut: Option<String>,
+    pub is_separator: bool,
+    pub danger: bool,
+}
+
+impl ContextMenuItem {
+    pub fn action(id: u32, label: impl Into<String>, shortcut: Option<&str>) -> Self {
+        Self {
+            id,
+            label: label.into(),
+            shortcut: shortcut.map(String::from),
+            is_separator: false,
+            danger: false,
+        }
+    }
+
+    pub fn separator() -> Self {
+        Self {
+            id: 0,
+            label: String::new(),
+            shortcut: None,
+            is_separator: true,
+            danger: false,
+        }
+    }
+}
+
+/// Context menu popup state (Phase 18).
+#[derive(Debug, Clone)]
+pub struct ContextMenu {
+    pub rect: Rect,
+    pub items: Vec<ContextMenuItem>,
+    pub hovered: Option<usize>,
+}
+
+impl ContextMenu {
+    pub fn new(x: i32, y: i32, w: i32, items: Vec<ContextMenuItem>) -> Self {
+        let mut total_h = 10;
+        for item in &items {
+            total_h += if item.is_separator { 6 } else { 24 };
+        }
+        Self {
+            rect: Rect::new(x, y, w, total_h),
+            items,
+            hovered: None,
+        }
+    }
+}
+
+/// Start Menu state (Phase 18).
+#[derive(Debug, Clone)]
+pub struct StartMenuState {
+    pub open: bool,
+    pub search_query: String,
+    pub selected_pinned: usize,
+    pub power_menu_open: bool,
+    pub power_menu_selected: usize,
+}
+
+impl Default for StartMenuState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            search_query: String::new(),
+            selected_pinned: 0,
+            power_menu_open: false,
+            power_menu_selected: 0,
+        }
+    }
+}
+
+/// Quick Settings tray panel state (Phase 18).
+#[derive(Debug, Clone)]
+pub struct QuickSettingsState {
+    pub open: bool,
+    pub network_on: bool,
+    pub dnd_on: bool,
+    pub night_light_on: bool,
+    pub volume: u8,
+    pub brightness: u8,
+}
+
+impl Default for QuickSettingsState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            network_on: true,
+            dnd_on: false,
+            night_light_on: false,
+            volume: 75,
+            brightness: 90,
+        }
+    }
+}
+
+/// Alt+Tab window switcher state (Phase 18).
+#[derive(Debug, Clone, Default)]
+pub struct AltTabState {
+    pub open: bool,
+    pub selected: usize,
+}
 
 /// Window control button size (minimize, maximize, close) in titlebar.
 pub const CLOSE_SIZE: i32 = 20;
@@ -302,10 +411,14 @@ pub struct WindowManager {
     taskbar_targets: Option<TaskbarTargets>,
     /// Cached procedural wallpaper backbuffer for 60+ FPS blits.
     wallpaper: Vec<u8>,
-    /// Frames remaining for the boot toast hint.
-    toast_frames: u32,
-    /// First click flag to dismiss toast early.
-    first_click: bool,
+    // Phase 18 Desktop Experience State
+    pub selected_desktop_icon: Option<usize>,
+    pub last_desktop_click: Option<(usize, u64)>,
+    pub tick_count: u64,
+    pub context_menu: Option<ContextMenu>,
+    pub start_menu: StartMenuState,
+    pub quick_settings: QuickSettingsState,
+    pub alt_tab: AltTabState,
 }
 
 impl WindowManager {
@@ -325,8 +438,13 @@ impl WindowManager {
             drag: Drag::None,
             taskbar_targets: None,
             wallpaper: Vec::new(),
-            toast_frames: 300,
-            first_click: false,
+            selected_desktop_icon: None,
+            last_desktop_click: None,
+            tick_count: 0,
+            context_menu: None,
+            start_menu: StartMenuState::default(),
+            quick_settings: QuickSettingsState::default(),
+            alt_tab: AltTabState::default(),
         }
     }
 
@@ -690,17 +808,272 @@ impl WindowManager {
         rects
     }
 
-    /// Handles a click on the floating dock.
-    pub fn taskbar_click(&mut self, x: i32, y: i32) -> Option<u64> {
-        let targets = self.taskbar_targets?;
-        if self.dock_start_rect().contains(x, y) {
-            if let Some(w) = self.windows.iter_mut().find(|w| w.id == targets.sysmon) {
-                if w.minimized {
-                    w.minimized = false;
+    /// Global rect for the system tray inside the dock.
+    pub fn dock_tray_rect(&self) -> Rect {
+        let d = self.dock_rect();
+        let buttons = self.dock_button_rects();
+        let sep2_x = buttons[5].right() + 6;
+        Rect::new(sep2_x + 6, d.y + 4, (d.right() - sep2_x - 12).max(40), d.h - 8)
+    }
+
+    /// Global rect for the Start Menu panel.
+    pub fn start_menu_rect(&self) -> Rect {
+        let w = START_MENU_W.min(self.screen_w - 24);
+        let h = START_MENU_H.min(self.screen_h - DOCK_H - 24);
+        let x = ((self.screen_w - w) / 2).max(12);
+        let y = (self.dock_rect().y - h - 10).max(12);
+        Rect::new(x, y, w, h)
+    }
+
+    /// Global rect for the Quick Settings panel.
+    pub fn quick_settings_rect(&self) -> Rect {
+        let w = QUICK_SETTINGS_W.min(self.screen_w - 24);
+        let h = QUICK_SETTINGS_H.min(self.screen_h - DOCK_H - 24);
+        let x = (self.dock_rect().right() - w).clamp(12, (self.screen_w - w - 12).max(12));
+        let y = (self.dock_rect().y - h - 10).max(12);
+        Rect::new(x, y, w, h)
+    }
+
+    /// Rects for all 9 desktop shortcut icons.
+    pub fn desktop_icon_rects(&self) -> Vec<Rect> {
+        let mut rects = Vec::new();
+        let col_w = 76;
+        let row_h = 76;
+        let max_rows = ((self.screen_h - DOCK_H - 30) / row_h).max(4);
+        for i in 0..DESKTOP_ITEMS.len() {
+            let col = (i as i32) / max_rows;
+            let row = (i as i32) % max_rows;
+            let x = 16 + col * (col_w + 10);
+            let y = 16 + row * row_h;
+            rects.push(Rect::new(x, y, col_w, row_h));
+        }
+        rects
+    }
+
+    /// Launches or un-minimizes the application corresponding to the icon.
+    pub fn launch_app_by_icon(&mut self, icon: Icon) {
+        let Some(targets) = self.taskbar_targets else { return; };
+        let id = match icon {
+            Icon::ThisPc | Icon::SysMon => targets.sysmon,
+            Icon::Files | Icon::Folder => targets.files,
+            Icon::Editor | Icon::FileTxt | Icon::FileRs => targets.editor,
+            Icon::Terminal | Icon::FileElf => targets.terminal,
+            Icon::Browser => targets.browser,
+            Icon::Mines => targets.mines,
+            Icon::Settings => {
+                self.quick_settings.open = true;
+                return;
+            }
+            Icon::Trash => {
+                crate::gui::notify("Recycle Bin", "Trash is empty", crate::gui::NotificationKind::Info);
+                return;
+            }
+        };
+        if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
+            w.minimized = false;
+        }
+        self.focus_and_type(id);
+    }
+
+    /// Filters pinned apps according to the active search query.
+    pub fn filtered_pinned_apps(&self) -> Vec<(usize, Icon, &'static str)> {
+        let q = self.start_menu.search_query.trim();
+        PINNED_APPS
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, name))| contains_ignore_ascii_case(name, q))
+            .map(|(orig_idx, &(icon, name))| (orig_idx, icon, name))
+            .collect()
+    }
+
+    /// Global key shortcuts (Win/Super, Alt+Tab, Start Menu & Context Menu navigation).
+    pub fn handle_global_key(&mut self, ev: input::KeyEvent) -> bool {
+        // 1. Super/Win key toggles Start Menu
+        if ev.code == input::KeyCode::Super && ev.pressed {
+            self.start_menu.open = !self.start_menu.open;
+            if self.start_menu.open {
+                self.context_menu = None;
+                self.quick_settings.open = false;
+                self.start_menu.search_query.clear();
+                self.start_menu.selected_pinned = 0;
+                self.start_menu.power_menu_open = false;
+            }
+            return true;
+        }
+
+        // 2. Alt+Tab switcher
+        if ev.modifiers.alt && ev.code == input::KeyCode::Tab && ev.pressed {
+            let win_count = self.windows.iter().filter(|w| !w.minimized).count();
+            if win_count > 0 {
+                self.alt_tab.open = true;
+                self.alt_tab.selected = (self.alt_tab.selected + 1) % win_count;
+            }
+            return true;
+        }
+        if ev.code == input::KeyCode::Alt && !ev.pressed && self.alt_tab.open {
+            let non_min: Vec<u64> = self.windows.iter().filter(|w| !w.minimized).map(|w| w.id).collect();
+            if let Some(&id) = non_min.get(self.alt_tab.selected) {
+                self.focus_and_type(id);
+            }
+            self.alt_tab.open = false;
+            return true;
+        }
+        if self.alt_tab.open {
+            if ev.code == input::KeyCode::Esc && ev.pressed {
+                self.alt_tab.open = false;
+            }
+            return true;
+        }
+
+        // 3. Context Menu dismiss
+        if self.context_menu.is_some() && ev.code == input::KeyCode::Esc && ev.pressed {
+            self.context_menu = None;
+            return true;
+        }
+
+        // 4. Quick Settings dismiss
+        if self.quick_settings.open && ev.code == input::KeyCode::Esc && ev.pressed {
+            self.quick_settings.open = false;
+            return true;
+        }
+
+        // 5. Start Menu navigation & search
+        if self.start_menu.open && ev.pressed {
+            if ev.code == input::KeyCode::Esc {
+                if self.start_menu.power_menu_open {
+                    self.start_menu.power_menu_open = false;
+                } else {
+                    self.start_menu.open = false;
+                }
+                return true;
+            }
+
+            if self.start_menu.power_menu_open {
+                match ev.code {
+                    input::KeyCode::ArrowUp => {
+                        self.start_menu.power_menu_selected = self.start_menu.power_menu_selected.saturating_sub(1);
+                        return true;
+                    }
+                    input::KeyCode::ArrowDown => {
+                        self.start_menu.power_menu_selected = (self.start_menu.power_menu_selected + 1).min(2);
+                        return true;
+                    }
+                    input::KeyCode::Enter => {
+                        match self.start_menu.power_menu_selected {
+                            0 => {
+                                crate::gui::notify("Power", "System sleeping...", crate::gui::NotificationKind::Info);
+                                self.start_menu.power_menu_open = false;
+                                self.start_menu.open = false;
+                            }
+                            1 => crate::acpi::reboot(),
+                            2 => crate::acpi::poweroff(),
+                            _ => {}
+                        }
+                        return true;
+                    }
+                    _ => {}
                 }
             }
-            return self.windows.iter().any(|w| w.id == targets.sysmon).then_some(targets.sysmon);
+
+            let filtered = self.filtered_pinned_apps();
+            let count = filtered.len();
+
+            match ev.code {
+                input::KeyCode::ArrowLeft => {
+                    if count > 0 {
+                        self.start_menu.selected_pinned = self.start_menu.selected_pinned.saturating_sub(1);
+                    }
+                    return true;
+                }
+                input::KeyCode::ArrowRight => {
+                    if count > 0 {
+                        self.start_menu.selected_pinned = (self.start_menu.selected_pinned + 1).min(count - 1);
+                    }
+                    return true;
+                }
+                input::KeyCode::ArrowUp => {
+                    if self.start_menu.selected_pinned >= 4 {
+                        self.start_menu.selected_pinned -= 4;
+                    }
+                    return true;
+                }
+                input::KeyCode::ArrowDown => {
+                    if count > 0 && self.start_menu.selected_pinned + 4 < count {
+                        self.start_menu.selected_pinned += 4;
+                    }
+                    return true;
+                }
+                input::KeyCode::Enter => {
+                    if let Some(&(_, icon, _)) = filtered.get(self.start_menu.selected_pinned) {
+                        self.launch_app_by_icon(icon);
+                        self.start_menu.open = false;
+                    }
+                    return true;
+                }
+                input::KeyCode::Backspace => {
+                    self.start_menu.search_query.pop();
+                    self.start_menu.selected_pinned = 0;
+                    return true;
+                }
+                input::KeyCode::Char(c) if !ev.modifiers.ctrl && !ev.modifiers.alt => {
+                    if self.start_menu.search_query.len() < 24 {
+                        self.start_menu.search_query.push(c);
+                        self.start_menu.selected_pinned = 0;
+                    }
+                    return true;
+                }
+                _ => {}
+            }
         }
+
+        false
+    }
+
+    /// Executes a context menu action by its numerical id.
+    pub fn execute_context_action(&mut self, action_id: u32) {
+        match action_id {
+            1 => crate::gui::notify("Desktop", "New folder created", crate::gui::NotificationKind::Success),
+            2 => {
+                self.wallpaper.clear();
+                crate::gui::notify("Desktop", "Desktop refreshed", crate::gui::NotificationKind::Info);
+            }
+            3 => self.launch_app_by_icon(Icon::SysMon),
+            4 => self.launch_app_by_icon(Icon::Terminal),
+            101 => crate::gui::notify("Files", "Opening selected item...", crate::gui::NotificationKind::Info),
+            102 => crate::gui::notify("Files", "Renaming selected item...", crate::gui::NotificationKind::Info),
+            103 => crate::gui::notify("Files", "Item copied to clipboard", crate::gui::NotificationKind::Info),
+            104 => crate::gui::notify("Files", "Item moved to Trash", crate::gui::NotificationKind::Warning),
+            105 => crate::gui::notify("Properties", "TriOS RAMFS Object (Read/Write)", crate::gui::NotificationKind::Info),
+            201 => crate::gui::notify("Editor", "Cut text to clipboard", crate::gui::NotificationKind::Info),
+            202 => crate::gui::notify("Editor", "Copied text to clipboard", crate::gui::NotificationKind::Info),
+            203 => crate::gui::notify("Editor", "Pasted text from clipboard", crate::gui::NotificationKind::Info),
+            204 => crate::gui::notify("Editor", "Selected all text", crate::gui::NotificationKind::Info),
+            _ => {}
+        }
+    }
+
+    /// Handles a click on the floating dock.
+    pub fn taskbar_click(&mut self, x: i32, y: i32) -> Option<u64> {
+        if self.dock_start_rect().contains(x, y) {
+            self.start_menu.open = !self.start_menu.open;
+            if self.start_menu.open {
+                self.quick_settings.open = false;
+                self.context_menu = None;
+                self.start_menu.search_query.clear();
+                self.start_menu.selected_pinned = 0;
+                self.start_menu.power_menu_open = false;
+            }
+            return None;
+        }
+        if self.dock_tray_rect().contains(x, y) {
+            self.quick_settings.open = !self.quick_settings.open;
+            if self.quick_settings.open {
+                self.start_menu.open = false;
+                self.context_menu = None;
+            }
+            return None;
+        }
+        let targets = self.taskbar_targets?;
         let idx = self.dock_button_rects()
             .iter()
             .position(|r| r.contains(x, y))?;
@@ -723,24 +1096,6 @@ impl WindowManager {
         self.windows.iter().any(|w| w.id == id).then_some(id)
     }
 
-    /// Hit-tests desktop shortcut icons (when clicked on bare desktop).
-    pub fn desktop_icon_click(&mut self, x: i32, y: i32) -> Option<u64> {
-        let targets = self.taskbar_targets?;
-        let icons = desktop_icon_rects();
-        let idx = icons.iter().position(|r| r.contains(x, y))?;
-        let id = match idx {
-            0 => targets.sysmon,
-            1 => targets.files,
-            2 => targets.editor,
-            3 => targets.terminal,
-            4 => targets.browser,
-            _ => targets.mines,
-        };
-        if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
-            w.minimized = false;
-        }
-        self.windows.iter().any(|w| w.id == id).then_some(id)
-    }
 
     /// The dock's hit test zone.
     fn taskbar_rect(&self) -> Rect {
@@ -756,6 +1111,123 @@ impl WindowManager {
             .rposition(|w| !w.minimized && w.rect.contains(x, y))
     }
 
+    /// Handles clicks inside the Start Menu panel.
+    pub fn handle_start_menu_click(&mut self, cx: i32, cy: i32, sm_r: Rect) {
+        // 1. Power button check
+        let pwr_r = Rect::new(sm_r.right() - 52, sm_r.y + sm_r.h - 44, 36, 34);
+        if pwr_r.contains(cx, cy) {
+            self.start_menu.power_menu_open = !self.start_menu.power_menu_open;
+            return;
+        }
+
+        // 2. Power popup menu items check
+        if self.start_menu.power_menu_open {
+            let pm_r = Rect::new(sm_r.right() - 146, sm_r.y + sm_r.h - 146, 130, 86);
+            if pm_r.contains(cx, cy) {
+                let row = ((cy - pm_r.y) / 28).clamp(0, 2);
+                match row {
+                    0 => {
+                        crate::gui::notify("Power", "System sleeping...", crate::gui::NotificationKind::Info);
+                        self.start_menu.power_menu_open = false;
+                        self.start_menu.open = false;
+                    }
+                    1 => crate::acpi::reboot(),
+                    2 => crate::acpi::poweroff(),
+                    _ => {}
+                }
+                return;
+            } else {
+                self.start_menu.power_menu_open = false;
+            }
+        }
+
+        // 3. Search bar click (resets search query)
+        let sb_r = Rect::new(sm_r.x + 20, sm_r.y + 16, sm_r.w - 40, 36);
+        if sb_r.contains(cx, cy) {
+            self.start_menu.search_query.clear();
+            return;
+        }
+
+        // 4. Pinned 4x3 grid items
+        let filtered = self.filtered_pinned_apps();
+        let grid_x0 = sm_r.x + 20;
+        let grid_y0 = sm_r.y + 88;
+        let cell_w = (sm_r.w - 40) / 4;
+        let cell_h = 70;
+
+        for (i, &(_, icon, _)) in filtered.iter().enumerate() {
+            if i >= 12 { break; }
+            let col = (i as i32) % 4;
+            let row = (i as i32) / 4;
+            let cell_r = Rect::new(grid_x0 + col * cell_w, grid_y0 + row * cell_h, cell_w, cell_h);
+            if cell_r.contains(cx, cy) {
+                self.launch_app_by_icon(icon);
+                self.start_menu.open = false;
+                return;
+            }
+        }
+
+        // 5. Recent items click
+        let rec_y = sm_r.y + 336;
+        if cy >= rec_y && cy < rec_y + 44 {
+            self.launch_app_by_icon(Icon::Editor);
+            self.start_menu.open = false;
+        }
+    }
+
+    /// Handles clicks inside the Quick Settings tray panel.
+    pub fn handle_quick_settings_click(&mut self, cx: i32, cy: i32, qs_r: Rect) {
+        let tile_y = qs_r.y + 50;
+        let tile_w = (qs_r.w - 40 - 16) / 3;
+        let tile_h = 56;
+
+        // Tile 1: Network
+        let t1 = Rect::new(qs_r.x + 20, tile_y, tile_w, tile_h);
+        if t1.contains(cx, cy) {
+            self.quick_settings.network_on = !self.quick_settings.network_on;
+            if self.quick_settings.network_on {
+                crate::gui::notify("Network", "Connected to local network", crate::gui::NotificationKind::Success);
+            } else {
+                crate::gui::notify("Network", "Network interface disabled", crate::gui::NotificationKind::Warning);
+            }
+            return;
+        }
+
+        // Tile 2: DND
+        let t2 = Rect::new(qs_r.x + 20 + tile_w + 8, tile_y, tile_w, tile_h);
+        if t2.contains(cx, cy) {
+            self.quick_settings.dnd_on = !self.quick_settings.dnd_on;
+            let status = if self.quick_settings.dnd_on { "Do Not Disturb active" } else { "Do Not Disturb off" };
+            crate::gui::notify("Focus", status, crate::gui::NotificationKind::Info);
+            return;
+        }
+
+        // Tile 3: Night Light
+        let t3 = Rect::new(qs_r.x + 20 + (tile_w + 8) * 2, tile_y, tile_w, tile_h);
+        if t3.contains(cx, cy) {
+            self.quick_settings.night_light_on = !self.quick_settings.night_light_on;
+            let status = if self.quick_settings.night_light_on { "Night Light warm tint on" } else { "Night Light off" };
+            crate::gui::notify("Display", status, crate::gui::NotificationKind::Info);
+            return;
+        }
+
+        // Volume Slider track
+        let track_w = qs_r.w - 40;
+        let vol_track = Rect::new(qs_r.x + 20, qs_r.y + 136, track_w, 24);
+        if vol_track.contains(cx, cy) {
+            let v = ((cx - (qs_r.x + 20)) * 100 / track_w).clamp(0, 100) as u8;
+            self.quick_settings.volume = v;
+            return;
+        }
+
+        // Brightness Slider track
+        let bri_track = Rect::new(qs_r.x + 20, qs_r.y + 186, track_w, 24);
+        if bri_track.contains(cx, cy) {
+            let b = ((cx - (qs_r.x + 20)) * 100 / track_w).clamp(10, 100) as u8;
+            self.quick_settings.brightness = b;
+        }
+    }
+
     /// Feeds one mouse event through the interaction state machine.
     pub fn handle_mouse(&mut self, me: input::MouseEvent) -> Option<WidgetAction> {
         // 1. cursor, clamped to the screen.
@@ -767,12 +1239,118 @@ impl WindowManager {
 
         let pressed = me.buttons.left && !self.prev_buttons.left;
         let released = !me.buttons.left && self.prev_buttons.left;
+        let right_pressed = me.buttons.right && !self.prev_buttons.right;
         self.prev_buttons = me.buttons;
+
+        // Context menu hover update
+        if let Some(ref mut menu) = self.context_menu {
+            if menu.rect.contains(cx, cy) {
+                let mut cur_y = menu.rect.y + 5;
+                let mut hovered_item = None;
+                for (i, item) in menu.items.iter().enumerate() {
+                    let item_h = if item.is_separator { 6 } else { 24 };
+                    if !item.is_separator && cy >= cur_y && cy < cur_y + item_h {
+                        hovered_item = Some(i);
+                        break;
+                    }
+                    cur_y += item_h;
+                }
+                menu.hovered = hovered_item;
+            } else {
+                menu.hovered = None;
+            }
+        }
+
+        // Right-click context menu creation
+        if right_pressed {
+            if let Some(idx) = self.window_index_at(cx, cy) {
+                let win = &self.windows[idx];
+                if win.title.contains("File") {
+                    self.context_menu = Some(ContextMenu::new(
+                        cx.min(self.screen_w - CONTEXT_MENU_W - 8),
+                        cy.min(self.screen_h - 160),
+                        CONTEXT_MENU_W,
+                        alloc::vec![
+                            ContextMenuItem::action(101, "Open", Some("Enter")),
+                            ContextMenuItem::action(102, "Rename", Some("F2")),
+                            ContextMenuItem::action(103, "Copy", Some("Ctrl+C")),
+                            ContextMenuItem::action(104, "Delete", Some("Del")),
+                            ContextMenuItem::separator(),
+                            ContextMenuItem::action(105, "Properties", Some("Alt+Enter")),
+                        ],
+                    ));
+                } else if win.title.contains("Editor") {
+                    self.context_menu = Some(ContextMenu::new(
+                        cx.min(self.screen_w - CONTEXT_MENU_W - 8),
+                        cy.min(self.screen_h - 140),
+                        CONTEXT_MENU_W,
+                        alloc::vec![
+                            ContextMenuItem::action(201, "Cut", Some("Ctrl+X")),
+                            ContextMenuItem::action(202, "Copy", Some("Ctrl+C")),
+                            ContextMenuItem::action(203, "Paste", Some("Ctrl+V")),
+                            ContextMenuItem::separator(),
+                            ContextMenuItem::action(204, "Select All", Some("Ctrl+A")),
+                        ],
+                    ));
+                }
+            } else if !self.taskbar_rect().contains(cx, cy) {
+                self.context_menu = Some(ContextMenu::new(
+                    cx.min(self.screen_w - CONTEXT_MENU_W - 8),
+                    cy.min(self.screen_h - 130),
+                    CONTEXT_MENU_W,
+                    alloc::vec![
+                        ContextMenuItem::action(1, "New Folder", None),
+                        ContextMenuItem::action(2, "Refresh", Some("F5")),
+                        ContextMenuItem::separator(),
+                        ContextMenuItem::action(3, "Display Settings", None),
+                        ContextMenuItem::action(4, "Open Terminal here", None),
+                    ],
+                ));
+            }
+        }
 
         // 2. press edge: choose window + zone.
         if pressed {
-            self.first_click = true;
             self.drag = Drag::None;
+
+            // Context Menu item click check
+            if let Some(menu) = self.context_menu.take() {
+                if menu.rect.contains(cx, cy) {
+                    let mut cur_y = menu.rect.y + 5;
+                    for item in &menu.items {
+                        let item_h = if item.is_separator { 6 } else { 24 };
+                        if !item.is_separator && cy >= cur_y && cy < cur_y + item_h {
+                            self.execute_context_action(item.id);
+                            return None;
+                        }
+                        cur_y += item_h;
+                    }
+                    return None;
+                }
+            }
+
+            // Start Menu panel click check
+            if self.start_menu.open {
+                let sm_r = self.start_menu_rect();
+                if sm_r.contains(cx, cy) {
+                    self.handle_start_menu_click(cx, cy, sm_r);
+                    return None;
+                } else if !self.dock_start_rect().contains(cx, cy) {
+                    self.start_menu.open = false;
+                    self.start_menu.power_menu_open = false;
+                }
+            }
+
+            // Quick Settings panel click check
+            if self.quick_settings.open {
+                let qs_r = self.quick_settings_rect();
+                if qs_r.contains(cx, cy) {
+                    self.handle_quick_settings_click(cx, cy, qs_r);
+                    return None;
+                } else if !self.dock_tray_rect().contains(cx, cy) {
+                    self.quick_settings.open = false;
+                }
+            }
 
             if self.taskbar_rect().contains(cx, cy) {
                 if let Some(id) = self.taskbar_click(cx, cy) {
@@ -866,8 +1444,25 @@ impl WindowManager {
                         }
                     }
                 }
-            } else if let Some(id) = self.desktop_icon_click(cx, cy) {
-                self.focus_and_type(id);
+            } else {
+                let icons = self.desktop_icon_rects();
+                if let Some(idx) = icons.iter().position(|r| r.contains(cx, cy)) {
+                    let now = self.tick_count;
+                    let is_double = if let Some((last_idx, last_tick)) = self.last_desktop_click {
+                        last_idx == idx && now.saturating_sub(last_tick) <= 60
+                    } else {
+                        false
+                    };
+                    self.selected_desktop_icon = Some(idx);
+                    self.last_desktop_click = Some((idx, now));
+                    if is_double {
+                        if let Some(item) = DESKTOP_ITEMS.get(idx) {
+                            self.launch_app_by_icon(item.0);
+                        }
+                    }
+                } else {
+                    self.selected_desktop_icon = None;
+                }
             }
         }
 
@@ -1005,8 +1600,8 @@ impl WindowManager {
     }
 
     /// Paints the whole desktop into the backbuffer: wallpaper, desktop icons,
-    /// non-minimized windows with modern glass chrome, floating toast, floating dock,
-    /// and the software cursor.
+    /// non-minimized windows with modern glass chrome, floating dock, Start Menu,
+    /// Quick Settings, Context Menu, Notifications, Alt+Tab overlay, and the software cursor.
     pub fn compose(&mut self, g: &mut Graphics, theme: &Theme) {
         self.ensure_wallpaper(g, theme);
         g.blit_full(&self.wallpaper);
@@ -1020,76 +1615,62 @@ impl WindowManager {
             Self::draw_window(g, theme, win, self.cursor);
         }
 
-        self.draw_toast(g, theme);
         self.draw_dock(g, theme);
+
+        if self.start_menu.open {
+            self.draw_start_menu(g, theme);
+        }
+
+        if self.quick_settings.open {
+            self.draw_quick_settings(g, theme);
+        }
+
+        if let Some(ref menu) = self.context_menu {
+            Self::draw_context_menu(g, theme, menu);
+        }
+
+        Self::draw_notifications(g, theme, self.screen_w);
+
+        if self.alt_tab.open {
+            self.draw_alt_tab(g, theme);
+        }
+
+        if self.quick_settings.night_light_on {
+            // Warm night light filter: softly attenuates harsh blue tones
+            for chunk in g.back.chunks_exact_mut(4) {
+                chunk[0] = (chunk[0] as u16 * 210 / 256) as u8;
+                chunk[1] = (chunk[1] as u16 * 242 / 256) as u8;
+                chunk[2] = (chunk[2] as u16 * 255 / 256).min(255) as u8;
+            }
+        }
+
         draw_cursor(g, self.cursor);
     }
 
     /// Draws clickable desktop shortcut icons on the left side of the workspace.
     fn draw_desktop_icons(&self, g: &mut Graphics, theme: &Theme) {
-        let icons = desktop_icon_rects();
+        let icons = self.desktop_icon_rects();
         let (cx, cy) = self.cursor;
 
-        for (i, (&label, r)) in DESKTOP_ICON_LABELS.iter().zip(icons.iter()).enumerate() {
+        for (i, (&(icon, label), r)) in DESKTOP_ITEMS.iter().zip(icons.iter()).enumerate() {
             let is_hover = r.contains(cx, cy);
-            if is_hover {
-                g.fill_rounded_rect(r.x, r.y, r.w as u32, r.h as u32, BUTTON_RADIUS, theme.surface_hi);
+            let is_sel = self.selected_desktop_icon == Some(i);
+
+            if is_sel {
+                g.fill_rounded_rect(r.x, r.y, r.w as u32, r.h as u32, BUTTON_RADIUS, theme.selection_bg);
+                g.draw_rounded_rect(r.x, r.y, r.w as u32, r.h as u32, BUTTON_RADIUS, theme.accent_cyan);
+            } else if is_hover {
+                g.fill_rounded_rect(r.x, r.y, r.w as u32, r.h as u32, BUTTON_RADIUS, theme.card_bg_hover);
                 g.draw_rounded_rect(r.x, r.y, r.w as u32, r.h as u32, BUTTON_RADIUS, theme.border);
             }
 
-            let ix = r.x + (r.w - 24) / 2;
-            let iy = r.y + 6;
-
-            match i {
-                0 => {
-                    // This PC (Monitor)
-                    g.draw_rect(ix, iy, 24, 16, theme.text);
-                    g.fill_rect(ix + 2, iy + 2, 20, 12, theme.accent_cyan);
-                    g.fill_rect(ix + 10, iy + 16, 4, 3, theme.text_dim);
-                    g.fill_rect(ix + 6, iy + 19, 12, 2, theme.text);
-                }
-                1 => {
-                    // Files (Folder)
-                    g.fill_rect(ix + 2, iy + 2, 8, 4, Color::new(0xF5, 0x9E, 0x0B));
-                    g.fill_rect(ix + 2, iy + 5, 20, 15, Color::new(0xD9, 0x77, 0x06));
-                    g.fill_rect(ix + 4, iy + 8, 18, 12, Color::new(0xFB, 0xBF, 0x24));
-                }
-                2 => {
-                    // Editor (Document)
-                    g.fill_rect(ix + 4, iy + 2, 16, 20, Color::new(0xF1, 0xF5, 0xF9));
-                    g.draw_rect(ix + 4, iy + 2, 16, 20, Color::new(0x94, 0xA3, 0xB8));
-                    g.fill_rect(ix + 7, iy + 6, 10, 2, Color::new(0x64, 0x74, 0x8B));
-                    g.fill_rect(ix + 7, iy + 10, 10, 2, Color::new(0x64, 0x74, 0x8B));
-                    g.fill_rect(ix + 7, iy + 14, 6, 2, Color::new(0x64, 0x74, 0x8B));
-                }
-                3 => {
-                    // Terminal (Console)
-                    g.fill_rect(ix + 2, iy + 3, 20, 18, Color::new(0x0F, 0x17, 0x2A));
-                    g.draw_rect(ix + 2, iy + 3, 20, 18, Color::new(0x47, 0x55, 0x69));
-                    g.fill_rect(ix + 2, iy + 3, 20, 4, Color::new(0x1E, 0x29, 0x3B));
-                    g.draw_text(ix + 5, iy + 8, ">", Color::new(0x22, 0xC5, 0x5E), None, 1);
-                    g.fill_rect(ix + 12, iy + 14, 5, 2, Color::new(0x22, 0xC5, 0x5E));
-                }
-                4 => {
-                    // Browser (Globe)
-                    g.draw_rect(ix + 4, iy + 4, 16, 16, Color::new(0x02, 0x84, 0xC7));
-                    g.fill_rect(ix + 6, iy + 6, 12, 12, Color::new(0x03, 0x69, 0xA1));
-                    g.draw_line(ix + 4, iy + 12, ix + 20, iy + 12, Color::new(0x38, 0xBD, 0xF8));
-                    g.draw_line(ix + 12, iy + 4, ix + 12, iy + 20, Color::new(0x38, 0xBD, 0xF8));
-                }
-                _ => {
-                    // Mines (Retro Mine)
-                    g.fill_rect(ix + 6, iy + 6, 12, 12, Color::new(0xE1, 0x1D, 0x48));
-                    g.draw_rect(ix + 6, iy + 6, 12, 12, Color::new(0xF8, 0x71, 0x71));
-                    g.draw_line(ix + 12, iy + 3, ix + 12, iy + 21, Color::new(0xF8, 0x71, 0x71));
-                    g.draw_line(ix + 3, iy + 12, ix + 21, iy + 12, Color::new(0xF8, 0x71, 0x71));
-                    g.fill_rect(ix + 10, iy + 10, 4, 4, Color::new(0xFF, 0xFF, 0xFF));
-                }
-            }
+            let ix = r.x + (r.w - 48) / 2;
+            let iy = r.y + 4;
+            icon.draw(g, ix, iy, 48, theme);
 
             let tw = Graphics::text_width(label, 1);
             let tx = r.x + (r.w - tw) / 2;
-            let ty = r.y + 36;
+            let ty = r.y + 56;
             g.draw_text(tx + 1, ty + 1, label, Color::new(0x05, 0x08, 0x0E), None, 1);
             g.draw_text(tx, ty, label, theme.text, None, 1);
         }
@@ -1246,28 +1827,7 @@ impl WindowManager {
         g.draw_rounded_rect(r.x, r.y, r.w as u32, r.h as u32, WINDOW_RADIUS, border);
     }
 
-    /// Draws floating toast notification at bottom-left (auto-hides after 5s or first click).
-    fn draw_toast(&mut self, g: &mut Graphics, theme: &Theme) {
-        if self.toast_frames == 0 || self.first_click {
-            return;
-        }
-        self.toast_frames = self.toast_frames.saturating_sub(1);
 
-        let tx = 16;
-        let ty = self.screen_h - 48;
-        let tw = 370;
-        let th = 28;
-
-        g.fill_rounded_rect(tx, ty, tw as u32, th as u32, BUTTON_RADIUS, theme.surface_hi);
-        g.draw_rounded_rect(tx, ty, tw as u32, th as u32, BUTTON_RADIUS, theme.border);
-
-        // Cyan status dot
-        g.fill_rect(tx + 10, ty + 10, 8, 8, theme.accent_cyan);
-        g.draw_rect(tx + 10, ty + 10, 8, 8, Color::new(0xFF, 0xFF, 0xFF));
-
-        let msg = "Click to capture | Right Ctrl = release | Ctrl+1..6";
-        g.draw_text(tx + 24, ty + 10, msg, theme.text, None, 1);
-    }
 
     /// Draws the floating centered rounded dock at bottom of screen.
     fn draw_dock(&self, g: &mut Graphics, theme: &Theme) {
@@ -1368,57 +1928,18 @@ impl WindowManager {
                 );
             }
 
-            let ix = r.x + (r.w - 24) / 2;
-            let iy = r.y + (r.h - 24) / 2;
+            let ix = r.x + (r.w - 32) / 2;
+            let iy = r.y + (r.h - 32) / 2;
 
-            match i {
-                0 => {
-                    // Files (Folder)
-                    g.fill_rect(ix + 2, iy + 3, 9, 4, Color::new(0xF5, 0x9E, 0x0B));
-                    g.fill_rect(ix + 2, iy + 6, 20, 14, Color::new(0xD9, 0x77, 0x06));
-                    g.fill_rect(ix + 4, iy + 9, 17, 10, Color::new(0xFB, 0xBF, 0x24));
-                }
-                1 => {
-                    // Editor (Code Document)
-                    g.fill_rect(ix + 3, iy + 2, 18, 20, Color::new(0xE6, 0xEA, 0xF5));
-                    g.draw_rect(ix + 3, iy + 2, 18, 20, Color::new(0x8A, 0x93, 0xAD));
-                    g.fill_rect(ix + 6, iy + 6, 12, 2, Color::new(0x22, 0xD3, 0xEE));
-                    g.fill_rect(ix + 6, iy + 10, 10, 2, Color::new(0x8B, 0x5C, 0xF6));
-                    g.fill_rect(ix + 6, iy + 14, 7, 2, Color::new(0x34, 0xD3, 0x99));
-                }
-                2 => {
-                    // Terminal (Console)
-                    g.fill_rect(ix + 2, iy + 3, 20, 18, Color::new(0x0B, 0x0F, 0x1A));
-                    g.draw_rect(ix + 2, iy + 3, 20, 18, theme.border);
-                    g.draw_text(ix + 5, iy + 7, ">", Color::new(0x34, 0xD3, 0x99), None, 1);
-                    g.fill_rect(ix + 12, iy + 13, 5, 2, Color::new(0x34, 0xD3, 0x99));
-                }
-                3 => {
-                    // Browser (Globe)
-                    g.draw_rect(ix + 3, iy + 3, 18, 18, Color::new(0x02, 0x84, 0xC7));
-                    g.fill_rect(ix + 5, iy + 5, 14, 14, Color::new(0x03, 0x69, 0xA1));
-                    g.draw_line(ix + 3, iy + 12, ix + 21, iy + 12, Color::new(0x38, 0xBD, 0xF8));
-                    g.draw_line(ix + 12, iy + 3, ix + 12, iy + 21, Color::new(0x38, 0xBD, 0xF8));
-                }
-                4 => {
-                    // SysMon (Telemetry Graph)
-                    g.draw_rect(ix + 2, iy + 4, 20, 16, Color::new(0x1C, 0x25, 0x40));
-                    g.fill_rect(ix + 3, iy + 5, 18, 14, Color::new(0x0B, 0x0F, 0x1A));
-                    g.draw_line(ix + 4, iy + 13, ix + 7, iy + 13, theme.accent_cyan);
-                    g.draw_line(ix + 7, iy + 13, ix + 10, iy + 7, theme.accent_cyan);
-                    g.draw_line(ix + 10, iy + 7, ix + 13, iy + 16, theme.accent_cyan);
-                    g.draw_line(ix + 13, iy + 16, ix + 16, iy + 11, theme.accent_cyan);
-                    g.draw_line(ix + 16, iy + 11, ix + 19, iy + 11, theme.accent_cyan);
-                }
-                _ => {
-                    // Mines (TriSweeper)
-                    g.fill_rect(ix + 5, iy + 5, 14, 14, Color::new(0xE1, 0x1D, 0x48));
-                    g.draw_rect(ix + 5, iy + 5, 14, 14, theme.danger);
-                    g.draw_line(ix + 12, iy + 2, ix + 12, iy + 22, theme.danger);
-                    g.draw_line(ix + 2, iy + 12, ix + 22, iy + 12, theme.danger);
-                    g.fill_rect(ix + 9, iy + 9, 4, 4, Color::new(0xFF, 0xFF, 0xFF));
-                }
-            }
+            let icon = match i {
+                0 => Icon::Files,
+                1 => Icon::Editor,
+                2 => Icon::Terminal,
+                3 => Icon::Browser,
+                4 => Icon::SysMon,
+                _ => Icon::Mines,
+            };
+            icon.draw(g, ix, iy, 32, theme);
 
             // Running indicator dot underneath icon
             if let Some(tgt) = targets {
@@ -1449,13 +1970,21 @@ impl WindowManager {
         g.fill_rect(sep2_x, dock_r.y + 12, 1, 32, theme.border);
 
         // 3. System Tray (Network, Volume, 2-line IST clock)
+        let tray_r = self.dock_tray_rect();
+        let is_tray_hover = tray_r.contains(cx, cy);
+        if is_tray_hover || self.quick_settings.open {
+            g.fill_rounded_rect(tray_r.x, tray_r.y, tray_r.w as u32, tray_r.h as u32, BUTTON_RADIUS, theme.surface_hi);
+            g.draw_rounded_rect(tray_r.x, tray_r.y, tray_r.w as u32, tray_r.h as u32, BUTTON_RADIUS, theme.border);
+        }
+
         let tray_x = sep2_x + 10;
         let tray_y = dock_r.y + 14;
 
         // Network icon: signal bars
-        g.fill_rect(tray_x, tray_y + 10, 3, 5, theme.accent_cyan);
-        g.fill_rect(tray_x + 4, tray_y + 6, 3, 9, theme.accent_cyan);
-        g.fill_rect(tray_x + 8, tray_y + 2, 3, 13, theme.accent_cyan);
+        let n_col = if self.quick_settings.network_on { theme.accent_cyan } else { theme.text_dim };
+        g.fill_rect(tray_x, tray_y + 10, 3, 5, n_col);
+        g.fill_rect(tray_x + 4, tray_y + 6, 3, 9, n_col);
+        g.fill_rect(tray_x + 8, tray_y + 2, 3, 13, n_col);
 
         // Volume icon: speaker
         let vx = tray_x + 18;
@@ -1467,6 +1996,478 @@ impl WindowManager {
 
         // 2-Line Clock & Date (IST: UTC +5:30)
         draw_ist_clock(g, dock_r.right() - 10, tray_y + 2, theme);
+    }
+
+    /// Draws the Start Menu overlay panel.
+    fn draw_start_menu(&self, g: &mut Graphics, theme: &Theme) {
+        let sm = self.start_menu_rect();
+        let (cx, cy) = self.cursor;
+
+        // Shadow behind start menu
+        g.fill_rounded_rect(
+            sm.x - 4,
+            sm.y - 3,
+            (sm.w + 8) as u32,
+            (sm.h + 10) as u32,
+            WINDOW_RADIUS + 4,
+            Color::new(0x04, 0x06, 0x10),
+        );
+
+        // Glass background
+        g.fill_rounded_rect(
+            sm.x,
+            sm.y,
+            sm.w as u32,
+            sm.h as u32,
+            WINDOW_RADIUS + 2,
+            theme.surface,
+        );
+
+        // Top sheen
+        g.fill_rect(
+            sm.x + 16,
+            sm.y + 1,
+            (sm.w - 32) as u32,
+            1,
+            Color::new(0x28, 0x37, 0x58),
+        );
+
+        // Border
+        g.draw_rounded_rect(
+            sm.x,
+            sm.y,
+            sm.w as u32,
+            sm.h as u32,
+            WINDOW_RADIUS + 2,
+            theme.border,
+        );
+
+        // 1. Search Bar
+        let sb = Rect::new(sm.x + 20, sm.y + 16, sm.w - 40, 36);
+        let is_sb_hover = sb.contains(cx, cy);
+        let sb_border = if is_sb_hover || !self.start_menu.search_query.is_empty() {
+            theme.accent_cyan
+        } else {
+            theme.border
+        };
+        g.fill_rounded_rect(sb.x, sb.y, sb.w as u32, sb.h as u32, BUTTON_RADIUS, theme.surface_hi);
+        g.draw_rounded_rect(sb.x, sb.y, sb.w as u32, sb.h as u32, BUTTON_RADIUS, sb_border);
+
+        // Search icon (magnifier circle + diagonal handle)
+        let sx = sb.x + 12;
+        let sy = sb.y + 11;
+        g.draw_rect(sx, sy, 9, 9, theme.accent_cyan);
+        g.draw_line(sx + 8, sy + 8, sx + 13, sy + 13, theme.accent_cyan);
+
+        // Search text or placeholder
+        if self.start_menu.search_query.is_empty() {
+            g.draw_text(sb.x + 32, sb.y + 11, "Type here to search apps...", theme.text_dim, None, 1);
+        } else {
+            let tx = sb.x + 32;
+            g.draw_text(tx, sb.y + 11, &self.start_menu.search_query, theme.text, None, 1);
+            let tw = Graphics::text_width(&self.start_menu.search_query, 1);
+            g.fill_rect(tx + tw + 2, sb.y + 9, 2, 16, theme.accent_cyan);
+        }
+
+        // 2. "Pinned" Section Header
+        g.draw_text(sm.x + 24, sm.y + 66, "Pinned", theme.text, None, 1);
+        let all_apps_hint = "All apps >";
+        let aaw = Graphics::text_width(all_apps_hint, 1);
+        g.draw_text(sm.right() - 24 - aaw, sm.y + 66, all_apps_hint, theme.text_dim, None, 1);
+
+        // 3. Pinned 4x3 Grid
+        let filtered = self.filtered_pinned_apps();
+        let grid_x0 = sm.x + 20;
+        let grid_y0 = sm.y + 88;
+        let cell_w = (sm.w - 40) / 4;
+        let cell_h = 70;
+
+        for (i, &(_, icon, name)) in filtered.iter().enumerate() {
+            if i >= 12 { break; }
+            let col = (i as i32) % 4;
+            let row = (i as i32) / 4;
+            let cell = Rect::new(grid_x0 + col * cell_w, grid_y0 + row * cell_h, cell_w, cell_h);
+            let is_hover = cell.contains(cx, cy);
+            let is_selected = i == self.start_menu.selected_pinned;
+
+            if is_selected {
+                g.fill_rounded_rect(cell.x + 2, cell.y + 2, (cell.w - 4) as u32, (cell.h - 4) as u32, BUTTON_RADIUS, theme.selection_bg);
+                g.draw_rounded_rect(cell.x + 2, cell.y + 2, (cell.w - 4) as u32, (cell.h - 4) as u32, BUTTON_RADIUS, theme.accent_cyan);
+            } else if is_hover {
+                g.fill_rounded_rect(cell.x + 2, cell.y + 2, (cell.w - 4) as u32, (cell.h - 4) as u32, BUTTON_RADIUS, theme.surface_hi);
+                g.draw_rounded_rect(cell.x + 2, cell.y + 2, (cell.w - 4) as u32, (cell.h - 4) as u32, BUTTON_RADIUS, theme.border);
+            }
+
+            let ix = cell.x + (cell.w - 32) / 2;
+            let iy = cell.y + 6;
+            icon.draw(g, ix, iy, 32, theme);
+
+            let tw = Graphics::text_width(name, 1);
+            let tx = cell.x + (cell.w - tw) / 2;
+            g.draw_text(tx, cell.y + 46, name, theme.text, None, 1);
+        }
+
+        // 4. "Recent" Section
+        let rec_y = sm.y + 316;
+        g.draw_text(sm.x + 24, rec_y, "Recent", theme.text, None, 1);
+
+        let rec_items = [
+            (Icon::FileRs, "main.rs", "TriOS Kernel Core"),
+            (Icon::FileTxt, "welcome.txt", "Notes & Docs"),
+            (Icon::FileElf, "doom.elf", "Executable Binary"),
+        ];
+        let rec_w = (sm.w - 40 - 16) / 3;
+        for (i, (icon, title, desc)) in rec_items.iter().enumerate() {
+            let rx = sm.x + 20 + i as i32 * (rec_w + 8);
+            let ry = rec_y + 20;
+            let rr = Rect::new(rx, ry, rec_w, 44);
+            let is_rh = rr.contains(cx, cy);
+            if is_rh {
+                g.fill_rounded_rect(rr.x, rr.y, rr.w as u32, rr.h as u32, BUTTON_RADIUS, theme.surface_hi);
+                g.draw_rounded_rect(rr.x, rr.y, rr.w as u32, rr.h as u32, BUTTON_RADIUS, theme.border);
+            } else {
+                g.fill_rounded_rect(rr.x, rr.y, rr.w as u32, rr.h as u32, BUTTON_RADIUS, theme.surface);
+                g.draw_rounded_rect(rr.x, rr.y, rr.w as u32, rr.h as u32, BUTTON_RADIUS, theme.border);
+            }
+            icon.draw(g, rx + 8, ry + 10, 24, theme);
+            g.draw_text(rx + 36, ry + 8, title, theme.text, None, 1);
+            g.draw_text(rx + 36, ry + 24, desc, theme.text_dim, None, 1);
+        }
+
+        // 5. Separator line above footer
+        let sep_y = sm.y + sm.h - 54;
+        g.fill_rect(sm.x + 16, sep_y, (sm.w - 32) as u32, 1, theme.border);
+
+        // 6. User chip
+        let chip_x = sm.x + 20;
+        let chip_y = sep_y + 10;
+        let chip_r = Rect::new(chip_x, chip_y, 140, 36);
+        if chip_r.contains(cx, cy) {
+            g.fill_rounded_rect(chip_r.x, chip_r.y, chip_r.w as u32, chip_r.h as u32, BUTTON_RADIUS, theme.surface_hi);
+        }
+        // Avatar circle
+        let av_cx = chip_x + 18;
+        let av_cy = chip_y + 18;
+        for dy in -12..=12 {
+            for dx in -12..=12 {
+                if dx * dx + dy * dy <= 144 {
+                    g.set_pixel(av_cx + dx, av_cy + dy, theme.accent_cyan);
+                }
+            }
+        }
+        g.draw_char(av_cx - 4, av_cy - 4, 'J', Color::new(0xFF, 0xFF, 0xFF), None, 1);
+        g.draw_text(chip_x + 36, chip_y + 4, "Jojin", theme.text, None, 1);
+        g.draw_text(chip_x + 36, chip_y + 18, "Administrator", theme.text_dim, None, 1);
+
+        // 7. Power button
+        let pwr_r = Rect::new(sm.right() - 52, chip_y + 2, 34, 32);
+        let is_pwr_hover = pwr_r.contains(cx, cy);
+        if is_pwr_hover || self.start_menu.power_menu_open {
+            g.fill_rounded_rect(pwr_r.x, pwr_r.y, pwr_r.w as u32, pwr_r.h as u32, BUTTON_RADIUS, theme.surface_hi);
+            g.draw_rounded_rect(pwr_r.x, pwr_r.y, pwr_r.w as u32, pwr_r.h as u32, BUTTON_RADIUS, theme.accent_cyan);
+        } else {
+            g.draw_rounded_rect(pwr_r.x, pwr_r.y, pwr_r.w as u32, pwr_r.h as u32, BUTTON_RADIUS, theme.border);
+        }
+        // Power icon (circle + tick)
+        let px = pwr_r.x + 17;
+        let py = pwr_r.y + 16;
+        for dy in -7i32..=7i32 {
+            for dx in -7i32..=7i32 {
+                let dist = dx * dx + dy * dy;
+                if dist >= 25 && dist <= 49 && (dy > -3 || dx.abs() > 2) {
+                    g.set_pixel(px + dx, py + dy, theme.text);
+                }
+            }
+        }
+        g.fill_rect(px - 1, py - 8, 2, 7, theme.danger);
+
+        // 8. Power popup menu
+        if self.start_menu.power_menu_open {
+            let pm_w = 130;
+            let pm_h = 86;
+            let pm_x = sm.right() - pm_w - 16;
+            let pm_y = sm.y + sm.h - pm_h - 60;
+
+            g.fill_rounded_rect(pm_x - 2, pm_y - 2, (pm_w + 4) as u32, (pm_h + 4) as u32, BUTTON_RADIUS + 2, Color::new(0x04, 0x06, 0x10));
+            g.fill_rounded_rect(pm_x, pm_y, pm_w as u32, pm_h as u32, BUTTON_RADIUS, theme.surface_hi);
+            g.draw_rounded_rect(pm_x, pm_y, pm_w as u32, pm_h as u32, BUTTON_RADIUS, theme.border);
+
+            let options = ["Sleep", "Restart", "Shut down"];
+            for (oi, &opt) in options.iter().enumerate() {
+                let oy = pm_y + 4 + oi as i32 * 26;
+                let or = Rect::new(pm_x + 4, oy, pm_w - 8, 24);
+                let is_opt_hover = or.contains(cx, cy) || oi == self.start_menu.power_menu_selected;
+                if is_opt_hover {
+                    let h_col = if oi == 2 { theme.danger } else { theme.selection_bg };
+                    g.fill_rounded_rect(or.x, or.y, or.w as u32, or.h as u32, BUTTON_RADIUS - 2, h_col);
+                }
+                let t_col = if is_opt_hover && oi == 2 { Color::new(0xFF, 0xFF, 0xFF) } else { theme.text };
+                g.draw_text(or.x + 12, or.y + 6, opt, t_col, None, 1);
+            }
+        }
+    }
+
+    /// Draws the Quick Settings panel.
+    fn draw_quick_settings(&self, g: &mut Graphics, theme: &Theme) {
+        let qs = self.quick_settings_rect();
+
+        // Shadow behind panel
+        g.fill_rounded_rect(
+            qs.x - 4,
+            qs.y - 3,
+            (qs.w + 8) as u32,
+            (qs.h + 10) as u32,
+            WINDOW_RADIUS + 3,
+            Color::new(0x04, 0x06, 0x10),
+        );
+
+        // Glass background
+        g.fill_rounded_rect(
+            qs.x,
+            qs.y,
+            qs.w as u32,
+            qs.h as u32,
+            WINDOW_RADIUS + 2,
+            theme.surface,
+        );
+
+        // Highlight sheen
+        g.fill_rect(
+            qs.x + 16,
+            qs.y + 1,
+            (qs.w - 32) as u32,
+            1,
+            Color::new(0x28, 0x37, 0x58),
+        );
+
+        // Border
+        g.draw_rounded_rect(
+            qs.x,
+            qs.y,
+            qs.w as u32,
+            qs.h as u32,
+            WINDOW_RADIUS + 2,
+            theme.border,
+        );
+
+        // Header
+        g.draw_text(qs.x + 20, qs.y + 16, "Quick Settings", theme.text, None, 1);
+        g.draw_text(qs.x + 20, qs.y + 32, "AC Power | Battery 100%", theme.text_dim, None, 1);
+
+        // 3 Toggle Tiles
+        let tile_y = qs.y + 50;
+        let tile_w = (qs.w - 40 - 16) / 3;
+        let tile_h = 56;
+
+        // Tile 1: Network
+        let t1 = Rect::new(qs.x + 20, tile_y, tile_w, tile_h);
+        let t1_bg = if self.quick_settings.network_on { theme.surface_hi } else { theme.surface };
+        let t1_bd = if self.quick_settings.network_on { theme.accent_cyan } else { theme.border };
+        g.fill_rounded_rect(t1.x, t1.y, t1.w as u32, t1.h as u32, BUTTON_RADIUS, t1_bg);
+        g.draw_rounded_rect(t1.x, t1.y, t1.w as u32, t1.h as u32, BUTTON_RADIUS, t1_bd);
+        let n_col = if self.quick_settings.network_on { theme.accent_cyan } else { theme.text_dim };
+        g.fill_rect(t1.x + 12, t1.y + 18, 3, 4, n_col);
+        g.fill_rect(t1.x + 16, t1.y + 14, 3, 8, n_col);
+        g.fill_rect(t1.x + 20, t1.y + 10, 3, 12, n_col);
+        g.draw_text(t1.x + 12, t1.y + 26, "Network", theme.text, None, 1);
+        let n_sub = if self.quick_settings.network_on { "Connected" } else { "Off" };
+        g.draw_text(t1.x + 12, t1.y + 40, n_sub, theme.text_dim, None, 1);
+
+        // Tile 2: Do Not Disturb
+        let t2 = Rect::new(qs.x + 20 + tile_w + 8, tile_y, tile_w, tile_h);
+        let t2_bg = if self.quick_settings.dnd_on { theme.surface_hi } else { theme.surface };
+        let t2_bd = if self.quick_settings.dnd_on { theme.accent_violet } else { theme.border };
+        g.fill_rounded_rect(t2.x, t2.y, t2.w as u32, t2.h as u32, BUTTON_RADIUS, t2_bg);
+        g.draw_rounded_rect(t2.x, t2.y, t2.w as u32, t2.h as u32, BUTTON_RADIUS, t2_bd);
+        let d_col = if self.quick_settings.dnd_on { theme.accent_violet } else { theme.text_dim };
+        g.fill_rect(t2.x + 14, t2.y + 12, 8, 8, d_col);
+        g.fill_rect(t2.x + 12, t2.y + 18, 12, 3, d_col);
+        g.draw_text(t2.x + 12, t2.y + 26, "DND", theme.text, None, 1);
+        let d_sub = if self.quick_settings.dnd_on { "Active" } else { "Off" };
+        g.draw_text(t2.x + 12, t2.y + 40, d_sub, theme.text_dim, None, 1);
+
+        // Tile 3: Night Light
+        let t3 = Rect::new(qs.x + 20 + (tile_w + 8) * 2, tile_y, tile_w, tile_h);
+        let amber = Color::new(0xF5, 0x9E, 0x0B);
+        let t3_bg = if self.quick_settings.night_light_on { theme.surface_hi } else { theme.surface };
+        let t3_bd = if self.quick_settings.night_light_on { amber } else { theme.border };
+        g.fill_rounded_rect(t3.x, t3.y, t3.w as u32, t3.h as u32, BUTTON_RADIUS, t3_bg);
+        g.draw_rounded_rect(t3.x, t3.y, t3.w as u32, t3.h as u32, BUTTON_RADIUS, t3_bd);
+        let l_col = if self.quick_settings.night_light_on { amber } else { theme.text_dim };
+        g.draw_rect(t3.x + 14, t3.y + 11, 8, 8, l_col);
+        g.fill_rect(t3.x + 16, t3.y + 13, 6, 6, l_col);
+        g.draw_text(t3.x + 12, t3.y + 26, "Night", theme.text, None, 1);
+        let l_sub = if self.quick_settings.night_light_on { "Warm" } else { "Off" };
+        g.draw_text(t3.x + 12, t3.y + 40, l_sub, theme.text_dim, None, 1);
+
+        // Volume Slider
+        let track_w = qs.w - 40;
+        let v_val = self.quick_settings.volume as i32;
+        g.draw_text(qs.x + 20, qs.y + 122, "Volume", theme.text, None, 1);
+        let v_txt = alloc::format!("{v_val}%");
+        g.draw_text(qs.right() - 44, qs.y + 122, &v_txt, theme.text_dim, None, 1);
+
+        let vy = qs.y + 144;
+        g.fill_rounded_rect(qs.x + 20, vy, track_w as u32, 8, 4, theme.surface_hi);
+        let fill_vw = (track_w * v_val / 100).clamp(0, track_w);
+        if fill_vw > 0 {
+            g.fill_rounded_rect(qs.x + 20, vy, fill_vw as u32, 8, 4, theme.accent_cyan);
+        }
+        let knob_vx = qs.x + 20 + fill_vw;
+        g.fill_rounded_rect(knob_vx - 6, vy - 4, 12, 16, 6, Color::new(0xFF, 0xFF, 0xFF));
+
+        // Brightness Slider
+        let b_val = self.quick_settings.brightness as i32;
+        g.draw_text(qs.x + 20, qs.y + 172, "Brightness", theme.text, None, 1);
+        let b_txt = alloc::format!("{b_val}%");
+        g.draw_text(qs.right() - 44, qs.y + 172, &b_txt, theme.text_dim, None, 1);
+
+        let by = qs.y + 194;
+        g.fill_rounded_rect(qs.x + 20, by, track_w as u32, 8, 4, theme.surface_hi);
+        let fill_bw = (track_w * b_val / 100).clamp(0, track_w);
+        if fill_bw > 0 {
+            g.fill_rounded_rect(qs.x + 20, by, fill_bw as u32, 8, 4, amber);
+        }
+        let knob_bx = qs.x + 20 + fill_bw;
+        g.fill_rounded_rect(knob_bx - 6, by - 4, 12, 16, 6, Color::new(0xFF, 0xFF, 0xFF));
+
+        // Footer
+        let f_sep = qs.y + qs.h - 38;
+        g.fill_rect(qs.x + 16, f_sep, (qs.w - 32) as u32, 1, theme.border);
+        g.draw_text(qs.x + 20, f_sep + 12, "TriOS Settings | v1.0.0", theme.text_dim, None, 1);
+    }
+
+    /// Draws a floating context menu popup widget.
+    fn draw_context_menu(g: &mut Graphics, theme: &Theme, menu: &ContextMenu) {
+        let r = menu.rect;
+
+        // Shadow
+        g.fill_rounded_rect(r.x - 3, r.y - 2, (r.w + 6) as u32, (r.h + 8) as u32, BUTTON_RADIUS + 2, Color::new(0x04, 0x06, 0x10));
+        g.fill_rounded_rect(r.x, r.y, r.w as u32, r.h as u32, BUTTON_RADIUS, theme.surface_hi);
+        g.draw_rounded_rect(r.x, r.y, r.w as u32, r.h as u32, BUTTON_RADIUS, theme.border);
+
+        let mut cur_y = r.y + 5;
+        for (i, item) in menu.items.iter().enumerate() {
+            if item.is_separator {
+                g.fill_rect(r.x + 8, cur_y + 2, (r.w - 16) as u32, 1, theme.border);
+                cur_y += 6;
+            } else {
+                let row_r = Rect::new(r.x + 4, cur_y, r.w - 8, 22);
+                let is_hover = menu.hovered == Some(i);
+                if is_hover {
+                    let h_col = if item.danger { theme.danger } else { theme.selection_bg };
+                    g.fill_rounded_rect(row_r.x, row_r.y, row_r.w as u32, row_r.h as u32, BUTTON_RADIUS - 2, h_col);
+                }
+                let t_col = if is_hover && item.danger {
+                    Color::new(0xFF, 0xFF, 0xFF)
+                } else if item.danger {
+                    theme.danger
+                } else {
+                    theme.text
+                };
+                g.draw_text(row_r.x + 8, row_r.y + 5, &item.label, t_col, None, 1);
+
+                if let Some(ref sc) = item.shortcut {
+                    let sw = Graphics::text_width(sc, 1);
+                    g.draw_text(row_r.right() - sw - 8, row_r.y + 5, sc, theme.text_dim, None, 1);
+                }
+                cur_y += 24;
+            }
+        }
+    }
+
+    /// Draws top-right stacked desktop toast notifications.
+    fn draw_notifications(g: &mut Graphics, theme: &Theme, screen_w: i32) {
+        let toasts = crate::gui::tick_and_get_toasts();
+        for (i, toast) in toasts.iter().enumerate().take(3) {
+            let tx = screen_w - TOAST_W - 16;
+            let ty = 16 + (i as i32) * (TOAST_H + 10);
+
+            // Shadow
+            g.fill_rounded_rect(tx - 3, ty - 2, (TOAST_W + 6) as u32, (TOAST_H + 6) as u32, BUTTON_RADIUS + 2, Color::new(0x04, 0x06, 0x10));
+            // Card
+            g.fill_rounded_rect(tx, ty, TOAST_W as u32, TOAST_H as u32, BUTTON_RADIUS, theme.surface_hi);
+            g.draw_rounded_rect(tx, ty, TOAST_W as u32, TOAST_H as u32, BUTTON_RADIUS, theme.border);
+
+            // Left indicator stripe
+            let ind_col = match toast.kind {
+                crate::gui::NotificationKind::Success => theme.success,
+                crate::gui::NotificationKind::Info => theme.accent_cyan,
+                crate::gui::NotificationKind::Warning => theme.warning,
+                crate::gui::NotificationKind::Error => theme.danger,
+            };
+            g.fill_rounded_rect(tx + 2, ty + 4, 4, (TOAST_H - 8) as u32, 2, ind_col);
+
+            // Title & Body
+            g.draw_text(tx + 14, ty + 10, &toast.title, theme.text, None, 1);
+            g.draw_text(tx + 14, ty + 28, &toast.body, theme.text_dim, None, 1);
+
+            // Remaining life progress bar at bottom
+            if toast.initial_ticks > 0 {
+                let bar_w = ((TOAST_W - 28) * (toast.remaining_ticks as i32) / (toast.initial_ticks as i32)).max(0);
+                g.fill_rect(tx + 14, ty + TOAST_H - 5, bar_w as u32, 2, ind_col);
+            }
+        }
+    }
+
+    /// Draws the Alt+Tab window switcher overlay.
+    fn draw_alt_tab(&self, g: &mut Graphics, theme: &Theme) {
+        let open_wins: Vec<&Window> = self.windows.iter().filter(|w| !w.minimized).collect();
+        let count = open_wins.len();
+        if count == 0 { return; }
+
+        let item_w = 80;
+        let item_h = 72;
+        let at_w = ((count as i32 * (item_w + 10)) + 30).clamp(280, self.screen_w - 40);
+        let at_h = 126;
+        let at_x = (self.screen_w - at_w) / 2;
+        let at_y = (self.screen_h - at_h) / 2;
+
+        // Shadow & panel
+        g.fill_rounded_rect(at_x - 4, at_y - 3, (at_w + 8) as u32, (at_h + 8) as u32, WINDOW_RADIUS + 3, Color::new(0x04, 0x06, 0x10));
+        g.fill_rounded_rect(at_x, at_y, at_w as u32, at_h as u32, WINDOW_RADIUS + 2, theme.surface);
+        g.draw_rounded_rect(at_x, at_y, at_w as u32, at_h as u32, WINDOW_RADIUS + 2, theme.border);
+
+        g.draw_text(at_x + 16, at_y + 12, "Task Switcher (Alt+Tab)", theme.text_dim, None, 1);
+
+        let items_x0 = at_x + 16;
+        let items_y0 = at_y + 36;
+
+        for (i, win) in open_wins.iter().enumerate() {
+            let rx = items_x0 + i as i32 * (item_w + 10);
+            let ry = items_y0;
+            let card = Rect::new(rx, ry, item_w, item_h);
+            let is_sel = i == self.alt_tab.selected;
+
+            if is_sel {
+                g.fill_rounded_rect(card.x, card.y, card.w as u32, card.h as u32, BUTTON_RADIUS, theme.selection_bg);
+                g.draw_rounded_rect(card.x, card.y, card.w as u32, card.h as u32, BUTTON_RADIUS, theme.accent_cyan);
+            } else {
+                g.fill_rounded_rect(card.x, card.y, card.w as u32, card.h as u32, BUTTON_RADIUS, theme.surface_hi);
+                g.draw_rounded_rect(card.x, card.y, card.w as u32, card.h as u32, BUTTON_RADIUS, theme.border);
+            }
+
+            let icon = if win.title.contains("File") {
+                Icon::Files
+            } else if win.title.contains("Editor") {
+                Icon::Editor
+            } else if win.title.contains("Terminal") {
+                Icon::Terminal
+            } else if win.title.contains("Browser") {
+                Icon::Browser
+            } else if win.title.contains("SysMon") || win.title.contains("About") {
+                Icon::SysMon
+            } else if win.title.contains("Mine") {
+                Icon::Mines
+            } else {
+                Icon::ThisPc
+            };
+            icon.draw(g, card.x + (card.w - 32) / 2, card.y + 8, 32, theme);
+
+            let short_title = if win.title.len() > 8 { &win.title[..8] } else { &win.title };
+            let tw = Graphics::text_width(short_title, 1);
+            g.draw_text(card.x + (card.w - tw) / 2, card.y + 48, short_title, theme.text, None, 1);
+        }
     }
 }
 
@@ -1523,30 +2524,55 @@ fn draw_ist_clock(g: &mut Graphics, right: i32, y: i32, theme: &Theme) {
     }
 }
 
-const DESKTOP_ICON_X: i32 = 18;
-const DESKTOP_ICON_Y0: i32 = 20;
-const DESKTOP_ICON_W: i32 = 64;
-const DESKTOP_ICON_H: i32 = 60;
-const DESKTOP_ICON_GAP: i32 = 14;
-
-const DESKTOP_ICON_LABELS: [&str; 6] = [
-    "This PC",
-    "Files",
-    "Editor",
-    "Terminal",
-    "Browser",
-    "Mines",
+pub const DESKTOP_ITEMS: [(Icon, &str); 9] = [
+    (Icon::ThisPc, "This PC"),
+    (Icon::Files, "Files"),
+    (Icon::Editor, "Editor"),
+    (Icon::Terminal, "Terminal"),
+    (Icon::Browser, "Browser"),
+    (Icon::SysMon, "SysMon"),
+    (Icon::Mines, "Mines"),
+    (Icon::Settings, "Settings"),
+    (Icon::Trash, "Trash"),
 ];
 
-fn desktop_icon_rects() -> [Rect; 6] {
-    let mut rects = [Rect::new(0, 0, DESKTOP_ICON_W, DESKTOP_ICON_H); 6];
-    let mut y = DESKTOP_ICON_Y0;
-    for r in &mut rects {
-        r.x = DESKTOP_ICON_X;
-        r.y = y;
-        y += DESKTOP_ICON_H + DESKTOP_ICON_GAP;
+pub const PINNED_APPS: [(Icon, &str); 12] = [
+    (Icon::Files, "Files"),
+    (Icon::Editor, "Editor"),
+    (Icon::Terminal, "Terminal"),
+    (Icon::Browser, "Browser"),
+    (Icon::SysMon, "SysMon"),
+    (Icon::Mines, "Mines"),
+    (Icon::Settings, "Settings"),
+    (Icon::ThisPc, "This PC"),
+    (Icon::Trash, "Trash"),
+    (Icon::FileTxt, "Notes"),
+    (Icon::FileElf, "Games"),
+    (Icon::Folder, "Storage"),
+];
+
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
     }
-    rects
+    let n_bytes = needle.as_bytes();
+    let h_bytes = haystack.as_bytes();
+    if n_bytes.len() > h_bytes.len() {
+        return false;
+    }
+    for i in 0..=(h_bytes.len() - n_bytes.len()) {
+        let mut matched = true;
+        for j in 0..n_bytes.len() {
+            if !h_bytes[i + j].eq_ignore_ascii_case(&n_bytes[j]) {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            return true;
+        }
+    }
+    false
 }
 
 

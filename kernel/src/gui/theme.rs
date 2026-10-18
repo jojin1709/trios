@@ -14,6 +14,15 @@ pub const DOCK_H: i32 = 56;
 #[allow(dead_code)]
 pub const SHADOW_BLUR: i32 = 16;
 
+// Phase 18: Desktop Experience Metrics
+pub const START_MENU_W: i32 = 440;
+pub const START_MENU_H: i32 = 480;
+pub const QUICK_SETTINGS_W: i32 = 340;
+pub const QUICK_SETTINGS_H: i32 = 320;
+pub const CONTEXT_MENU_W: i32 = 190;
+pub const TOAST_W: i32 = 320;
+pub const TOAST_H: i32 = 64;
+
 /// Local timezone offset: IST (UTC +5:30).
 pub const UTC_OFFSET_HOURS: i32 = 5;
 pub const UTC_OFFSET_MINS: i32 = 30;
@@ -34,6 +43,11 @@ pub struct Theme {
     pub success: Color,
     pub danger: Color,
     pub warning: Color,
+
+    // Phase 18 Desktop Experience Tokens
+    pub selection_bg: Color,
+    pub card_bg: Color,
+    pub card_bg_hover: Color,
 
     // Component mappings & aliases for widgets
     pub accent: Color,
@@ -78,6 +92,10 @@ impl Theme {
             success,
             danger,
             warning,
+
+            selection_bg: Color::rgb(0x1B385C),
+            card_bg: Color::rgb(0x18223A),
+            card_bg_hover: Color::rgb(0x222E4C),
 
             accent: accent_cyan,
             text_primary: text,

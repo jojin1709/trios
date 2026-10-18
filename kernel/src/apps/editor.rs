@@ -301,6 +301,11 @@ impl Editor {
             ED_STATUS,
             format!("Saved {} ({n} lines)", clip(&self.path, 24)),
         );
+        crate::gui::notify(
+            "File Saved",
+            format!("Saved {} ({} lines)", clip(&self.path, 20), n),
+            crate::gui::NotificationKind::Success,
+        );
         self.paint(wm);
         true
     }
