@@ -71,6 +71,7 @@
 //! plausible-looking lie.
 
 use core::sync::atomic::{AtomicU64, Ordering};
+use spin::Mutex;
 
 use crate::timer;
 
@@ -79,6 +80,35 @@ use crate::timer;
 /// `0` = not calibrated yet, or calibration failed — every conversion then
 /// reports `0` µs rather than inventing a number.
 static CYCLES_PER_US: AtomicU64 = AtomicU64::new(0);
+
+/// Returns the calibrated TSC frequency in MHz (cycles per microsecond).
+pub fn cycles_per_us() -> u64 {
+    CYCLES_PER_US.load(Ordering::Relaxed)
+}
+
+/// Real-time performance snapshot for the GUI Task Manager.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PerfSnapshot {
+    pub frames_per_sec: u64,
+    pub compose_avg_us: u64,
+    pub compose_max_us: u64,
+    pub flush_avg_us: u64,
+    pub wakes_per_sec: u64,
+}
+
+static LATEST_PERF: Mutex<PerfSnapshot> = Mutex::new(PerfSnapshot {
+    frames_per_sec: 0,
+    compose_avg_us: 0,
+    compose_max_us: 0,
+    flush_avg_us: 0,
+    wakes_per_sec: 0,
+});
+
+/// Returns the most recent 1-second performance metrics.
+pub fn get_latest() -> PerfSnapshot {
+    *LATEST_PERF.lock()
+}
 
 /// Calibration window: 50 PIT ticks = 500 ms at [`timer::TICKS_PER_SECOND`]
 /// — long enough to swamp tick-arrival jitter, short enough that nobody
@@ -348,6 +378,14 @@ impl Perf {
         serial_println!(
             "[perf   ] uptime hw_ticks={hw_ticks} evt_ticks={evt_ticks} dropped={dropped}"
         );
+
+        *LATEST_PERF.lock() = PerfSnapshot {
+            frames_per_sec: frames,
+            compose_avg_us: compose_avg,
+            compose_max_us: compose_max,
+            flush_avg_us: flush_avg,
+            wakes_per_sec: wakes,
+        };
 
         *self = Self::new();
     }

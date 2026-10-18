@@ -237,6 +237,7 @@ struct TaskbarTargets {
     editor: u64,
     terminal: u64,
     browser: u64,
+    sysmon: u64,
 }
 
 /// The compositor + interaction state machine.
@@ -591,12 +592,13 @@ impl WindowManager {
     /// [`taskbar_click`] answers `None`.
     ///
     /// [`taskbar_click`]: Self::taskbar_click
-    pub fn set_taskbar_targets(&mut self, files: u64, editor: u64, terminal: u64, browser: u64) {
+    pub fn set_taskbar_targets(&mut self, files: u64, editor: u64, terminal: u64, browser: u64, sysmon: u64) {
         self.taskbar_targets = Some(TaskbarTargets {
             files,
             editor,
             terminal,
             browser,
+            sysmon,
         });
     }
 
@@ -615,7 +617,8 @@ impl WindowManager {
             0 => targets.files,
             1 => targets.editor,
             2 => targets.terminal,
-            _ => targets.browser,
+            3 => targets.browser,
+            _ => targets.sysmon,
         };
         self.windows.iter().any(|w| w.id == id).then_some(id)
     }
@@ -1006,7 +1009,7 @@ const HINT_PAD: i32 = 6;
 /// depends on IRQ12, while every key it names is proven by the
 /// keyboard's own climbing `kb irq count`.
 const HINT_LINES: [&str; 1] = [
-    "Click here to capture input | Right Ctrl = release | Arrows = move | Space/Enter = click | Esc = close | Ctrl+1/2/3/4 = apps",
+    "Click here to capture input | Right Ctrl = release | Arrows = move | Space/Enter = click | Esc = close | Ctrl+1..5 = apps",
 ];
 /// One text line's height in pixels at [`HINT_SCALE`] (8 × 1 = 8 px).
 const HINT_LINE_H: i32 = crate::graphics::font::GLYPH_H as i32 * HINT_SCALE as i32;
@@ -1105,19 +1108,13 @@ const TASKBAR_BTN_H: i32 = TASKBAR_H - TASKBAR_PAD_Y * 2;
 /// [`WindowManager::taskbar_click`] resolves against
 /// [`TaskbarTargets`]' same-ordered fields — one array defines the whole
 /// left-to-right contract.
-const TASKBAR_LABELS: [&str; 4] = ["Files", "Editor", "Terminal", "Browser"];
+const TASKBAR_LABELS: [&str; 5] = ["Files", "Editor", "Terminal", "Browser", "SysMon"];
 
-/// The four button rects in **global** coordinates, left to right:
-///
-/// ```text
-/// Files     x   8 ..  98     Editor    x 102 .. 192
-/// Terminal  x 196 .. 286     Browser   x 290 .. 380
-/// all       y = (strip top) + TASKBAR_PAD_Y, h = TASKBAR_BTN_H (16)
-/// ```
-fn taskbar_button_rects(screen_h: i32) -> [Rect; 4] {
+/// The five button rects in **global** coordinates, left to right:
+fn taskbar_button_rects(screen_h: i32) -> [Rect; 5] {
     let y = screen_h - HINT_BAR_H - TASKBAR_H + TASKBAR_PAD_Y;
     let mut x = TASKBAR_X0;
-    let mut rects = [Rect::new(0, 0, TASKBAR_BTN_W, TASKBAR_BTN_H); 4];
+    let mut rects = [Rect::new(0, 0, TASKBAR_BTN_W, TASKBAR_BTN_H); 5];
     for r in &mut rects {
         r.x = x;
         r.y = y;
@@ -1152,7 +1149,7 @@ fn draw_taskbar(g: &mut Graphics, theme: &Theme) {
     }
 
     let stamp_y = y + (TASKBAR_H - Graphics::text_height(1)) / 2;
-    let min_x = buttons[3].right() + TASKBAR_X0;
+    let min_x = buttons[4].right() + TASKBAR_X0;
     draw_uptime_stamp(g, w - TASKBAR_X0, min_x, stamp_y, theme.text_secondary);
 }
 

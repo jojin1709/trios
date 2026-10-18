@@ -20,6 +20,7 @@ use x86_64::{
     registers::control::Cr3,
     structures::paging::{FrameAllocator, PageTable, PageTableFlags, PhysFrame, Size4KiB},
 };
+use spin::Mutex;
 
 /// x86 page size (4 KiB) — the only frame size Phase 1 allocates.
 pub const PAGE_SIZE: u64 = 4096;
@@ -37,6 +38,18 @@ pub struct MemoryMapSummary {
     pub other_bytes: u64,
     /// Highest physical address mentioned by the map (≈ top of RAM).
     pub top_of_ram: u64,
+}
+
+static MEMORY_SUMMARY: Mutex<Option<MemoryMapSummary>> = Mutex::new(None);
+
+/// Stores the firmware memory summary globally for diagnostics and the Task Manager.
+pub fn set_summary(summary: MemoryMapSummary) {
+    *MEMORY_SUMMARY.lock() = Some(summary);
+}
+
+/// Returns the stored firmware memory summary.
+pub fn get_summary() -> Option<MemoryMapSummary> {
+    *MEMORY_SUMMARY.lock()
 }
 
 /// Collapses the firmware memory map into [`MemoryMapSummary`].

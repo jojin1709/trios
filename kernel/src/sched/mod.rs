@@ -128,6 +128,43 @@ pub extern "C" fn thread_exit() -> ! {
     }
 }
 
+/// Snapshot of a thread for the Task Manager.
+#[derive(Debug, Clone)]
+pub struct ThreadInfo {
+    pub id: ThreadId,
+    pub name: alloc::string::String,
+    pub state_str: &'static str,
+}
+
+/// Returns a snapshot of all threads currently registered in the scheduler.
+pub fn thread_snapshot() -> Vec<ThreadInfo> {
+    interrupts::without_interrupts(|| {
+        let mut list = Vec::new();
+        if let Some(ref sched) = *SCHEDULER.lock() {
+            list.push(ThreadInfo {
+                id: sched.current.id,
+                name: sched.current.name.clone(),
+                state_str: "RUNNING",
+            });
+            for t in &sched.ready_queue {
+                list.push(ThreadInfo {
+                    id: t.id,
+                    name: t.name.clone(),
+                    state_str: "READY",
+                });
+            }
+            for t in &sched.sleep_queue {
+                list.push(ThreadInfo {
+                    id: t.id,
+                    name: t.name.clone(),
+                    state_str: "SLEEPING",
+                });
+            }
+        }
+        list
+    })
+}
+
 /// Core switch function. Must be called with interrupts disabled or will disable them internally.
 fn switch(exit_current: bool, sleep_until: Option<u64>) {
     let mut prev_rsp_ptr: *mut usize = core::ptr::null_mut();

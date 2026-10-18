@@ -123,6 +123,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     // 3. Memory map summary + frame allocator over the usable regions.
     let map = memory::summarize(&boot_info.memory_regions);
+    memory::set_summary(map);
     serial_println!(
         "[memory ] {} regions | usable {:.1} MiB | bootloader {} KiB | RAM top {:#x}",
         map.region_count,
@@ -526,9 +527,10 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
         apps.editor.win,
         apps.terminal.win,
         apps.browser.win,
+        apps.sysmon.win,
     );
     apps.refresh(&mut wm, &ramfs);
-    serial_println!("[apps  ] shell ready: Files, Editor, Terminal, Browser");
+    serial_println!("[apps  ] shell ready: Files, Editor, Terminal, Browser, SysMon");
 
     // Welcome starts focused (it was created first; re-assert so the
     // titlebar/border styling and Esc target are unambiguous).
@@ -754,6 +756,7 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                                 KeyCode::Char('2') => Some((apps.editor.win, "Editor")),
                                 KeyCode::Char('3') => Some((apps.terminal.win, "Terminal")),
                                 KeyCode::Char('4') => Some((apps.browser.win, "Browser")),
+                                KeyCode::Char('5') => Some((apps.sysmon.win, "SysMon")),
                                 _ => None,
                             };
                             if let Some((id, name)) = target {

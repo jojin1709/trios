@@ -41,6 +41,7 @@ pub mod editor;
 pub mod explorer;
 pub mod terminal;
 pub mod browser;
+pub mod sysmon;
 
 use alloc::string::String;
 
@@ -48,17 +49,18 @@ pub use editor::Editor;
 pub use explorer::Explorer;
 pub use terminal::Terminal;
 pub use browser::Browser;
+pub use sysmon::SysMon;
 
 use crate::event::KeyEvent;
 use crate::fs::FileSystem;
 use crate::gui::{Theme, WidgetAction, WindowManager};
 
-/// The shell's four applications plus their window ids.
+/// The shell's five applications plus their window ids.
 ///
 /// Create once at boot with [`Apps::new`] — the windows exist from the
 /// first frame (the CI screenshots at 3/8/15/30 s prove it) rather than
 /// appearing on first click, which also means the taskbar buttons and
-/// the `Ctrl+1/2/3/4` hotkeys have something to focus immediately after
+/// the `Ctrl+1/2/3/4/5` hotkeys have something to focus immediately after
 /// `desktop_run` starts.
 pub struct Apps {
     /// The "Files" window: browse, select, create.
@@ -69,10 +71,12 @@ pub struct Apps {
     pub terminal: Terminal,
     /// The "Browser" window: graphical web browser over TCP/HTTP.
     pub browser: Browser,
+    /// The "SysMon" window: live system monitor & task manager.
+    pub sysmon: SysMon,
 }
 
 impl Apps {
-    /// Builds all four app windows on `wm` (in that z-order) and
+    /// Builds all five app windows on `wm` (in that z-order) and
     /// returns the shell.
     pub fn new(wm: &mut WindowManager, theme: &Theme) -> Self {
         Self {
@@ -80,6 +84,7 @@ impl Apps {
             editor: Editor::new(wm, theme),
             terminal: Terminal::new(wm, theme),
             browser: Browser::new(wm, theme),
+            sysmon: SysMon::new(wm, theme),
         }
     }
 
@@ -104,6 +109,7 @@ impl Apps {
             || window_id == self.editor.win
             || window_id == self.terminal.win
             || window_id == self.browser.win
+            || window_id == self.sysmon.win
     }
 
     /// Is one of the shell's windows the *focused* one? (Convenience
@@ -139,6 +145,9 @@ impl Apps {
         } else if action.window_id == self.browser.win {
             self.browser
                 .on_action(action.widget_index, action.outcome, wm)
+        } else if action.window_id == self.sysmon.win {
+            self.sysmon
+                .on_action(action.widget_index, action.outcome, wm)
         } else {
             false
         }
@@ -163,6 +172,8 @@ impl Apps {
             self.terminal.on_key(event, wm, fs)
         } else if window_id == self.browser.win {
             self.browser.on_key(event, wm)
+        } else if window_id == self.sysmon.win {
+            self.sysmon.on_key(event, wm)
         } else {
             false
         }
@@ -170,17 +181,9 @@ impl Apps {
 
     /// The 1 Hz heartbeat hook (`main.rs` folds it into its tick arm).
     ///
-    /// Cycle 2's apps are entirely event-driven: every field they show
-    /// is rewritten the moment it changes, so there is nothing
-    /// time-dependent to repaint *yet* — hence `false`. The hook stays
-    /// in the contract because it is the natural home for the first
-    /// clock-driven thing the shell grows (a status clock, or an
-    /// auto-refresh of the explorer listing once this method also
-    /// receives the `&FileSystem`), and dropping it now would be a
-    /// breaking change to `Apps` later.
+    /// Updates live telemetry in the System Monitor.
     pub fn on_tick(&mut self, wm: &mut WindowManager) -> bool {
-        let _ = wm;
-        false
+        self.sysmon.on_tick(wm)
     }
 }
 
