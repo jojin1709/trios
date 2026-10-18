@@ -658,10 +658,12 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                         // discriminator. `report` resets its counters.
                         perf.report(timer::ticks(), n, event::dropped());
                     }
-                    // 2-second 0→1 sweep: proves the tick path drives
-                    // animation, not just the log.
-                    wm.set_progress(welcome, W_WELCOME_PROGRESS, (n % 200) as f32 / 200.0);
-                    dirty = true; // the sweep above is itself a change
+                    // 2-second 0→1 sweep: update at 20 Hz (every 5 ticks) to avoid
+                    // 100 Hz compositor redraws when the system is otherwise idle.
+                    if n % 5 == 0 {
+                        wm.set_progress(welcome, W_WELCOME_PROGRESS, (n % 200) as f32 / 200.0);
+                        dirty = true;
+                    }
                     // Phase 4 (cycle 2): fold in the shell's 1 Hz hook.
                     // Nothing in the apps is time-dependent yet (see
                     // `Apps::on_tick`), so today it contributes `false`.

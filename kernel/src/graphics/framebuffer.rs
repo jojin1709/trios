@@ -51,18 +51,18 @@ pub struct Graphics {
     /// loader). Only [`Graphics::flush`] touches it.
     hw: &'static mut [u8],
     /// Off-screen copy we draw into. Same byte layout as `hw`.
-    back: Vec<u8>,
+    pub(crate) back: Vec<u8>,
     /// Visible width in pixels (excludes stride padding).
-    width: usize,
+    pub(crate) width: usize,
     /// Height in pixels.
-    height: usize,
+    pub(crate) height: usize,
     /// Pixels per scanline **including** padding — some firmwares pad rows
     /// to an alignment boundary, so address math must use this, not width.
-    stride: usize,
+    pub(crate) stride: usize,
     /// Bytes per pixel (4 on every UEFI GOP mode the bootloader supports).
-    bpp: usize,
+    pub(crate) bpp: usize,
     /// Native channel order — the one thing [`Color::pack`] needs.
-    format: PixelFormat,
+    pub(crate) format: PixelFormat,
 }
 
 impl Graphics {
@@ -155,11 +155,26 @@ impl Graphics {
         }
         let packed = color.pack(self.format, self.bpp).to_le_bytes();
         let row_px = x1 - x0;
+
+        if self.bpp == 4 {
+            let color_u32 = color.pack(self.format, 4);
+            let u32_slice = unsafe {
+                core::slice::from_raw_parts_mut(
+                    self.back.as_mut_ptr() as *mut u32,
+                    self.back.len() / 4,
+                )
+            };
+            for row in y0..y1 {
+                let start = row * self.stride + x0;
+                let end = start + row_px;
+                u32_slice[start..end].fill(color_u32);
+            }
+            return;
+        }
+
         for row in y0..y1 {
             let start = (row * self.stride + x0) * self.bpp;
             let end = start + row_px * self.bpp;
-            // Walk the span one pixel at a time; `chunks_exact` hands LLVM
-            // a tight, vectorizable loop (still plain safe Rust).
             self.back[start..end]
                 .chunks_exact_mut(self.bpp)
                 .for_each(|px| px.copy_from_slice(&packed[..self.bpp]));
@@ -281,7 +296,18 @@ impl Graphics {
 
     /// Fills the whole visible screen with `color` (stride padding skipped).
     pub fn clear(&mut self, color: Color) {
-        self.fill_rect(0, 0, self.width as u32, self.height as u32, color);
+        if self.bpp == 4 && self.stride == self.width {
+            let color_u32 = color.pack(self.format, 4);
+            let u32_slice = unsafe {
+                core::slice::from_raw_parts_mut(
+                    self.back.as_mut_ptr() as *mut u32,
+                    self.back.len() / 4,
+                )
+            };
+            u32_slice.fill(color_u32);
+        } else {
+            self.fill_rect(0, 0, self.width as u32, self.height as u32, color);
+        }
     }
 
     // -- flushing: backbuffer -> hardware ----------------------------------

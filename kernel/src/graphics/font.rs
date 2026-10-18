@@ -56,11 +56,53 @@ impl Graphics {
         let scale = scale.max(1);
         let cell = GLYPH_W * scale;
         let Some(code) = ch.try_into().ok().filter(|&c: &u8| (c as usize) < 128) else {
-            // Out of the table's range — draw a placeholder box so layout
-            // gaps don't silently swallow characters (tofu, in font terms).
+            // Out of the table's range — draw a placeholder box
             self.draw_rect(x, y, cell, GLYPH_H * scale, fg);
             return;
         };
+
+        // Ultra-fast path: scale 1 on-screen text (99.9% of UI text)
+        if scale == 1 && self.bpp == 4 {
+            let (w, h) = (self.width as i32, self.height as i32);
+            if x >= 0 && x + 8 <= w && y >= 0 && y + 8 <= h {
+                let glyph = BASIC_LEGACY[code as usize];
+                let fg_packed = fg.pack(self.format, 4);
+                let base_idx = y as usize * self.stride + x as usize;
+                let stride = self.stride;
+                let u32_slice = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        self.back.as_mut_ptr() as *mut u32,
+                        self.back.len() / 4,
+                    )
+                };
+
+                if let Some(bg_color) = bg {
+                    let bg_packed = bg_color.pack(self.format, 4);
+                    for (row, bits) in glyph.iter().enumerate() {
+                        let row_idx = base_idx + row * stride;
+                        for col in 0..8 {
+                            let color = if ((bits >> col) & 1) != 0 {
+                                fg_packed
+                            } else {
+                                bg_packed
+                            };
+                            u32_slice[row_idx + col] = color;
+                        }
+                    }
+                } else {
+                    for (row, bits) in glyph.iter().enumerate() {
+                        let row_idx = base_idx + row * stride;
+                        for col in 0..8 {
+                            if ((bits >> col) & 1) != 0 {
+                                u32_slice[row_idx + col] = fg_packed;
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
         if let Some(bg) = bg {
             self.fill_rect(x, y, cell, GLYPH_H * scale, bg);
         }
@@ -73,7 +115,11 @@ impl Graphics {
                 }
                 let px = x + col * scale as i32;
                 let py = y + (row as i32) * scale as i32;
-                self.fill_rect(px, py, scale, scale, fg);
+                if scale == 1 {
+                    self.set_pixel(px, py, fg);
+                } else {
+                    self.fill_rect(px, py, scale, scale, fg);
+                }
             }
         }
     }
