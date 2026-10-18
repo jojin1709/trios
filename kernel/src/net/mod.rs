@@ -47,6 +47,7 @@ pub struct NetworkStack {
     pub dns: [u8; 4],
     pub arp_cache: Vec<ArpEntry>,
     pub ping_replies: Vec<PingReplyInfo>,
+    pub dns_replies: Vec<(u16, [u8; 4])>,
 }
 
 pub static NET: Mutex<NetworkStack> = Mutex::new(NetworkStack {
@@ -56,6 +57,7 @@ pub static NET: Mutex<NetworkStack> = Mutex::new(NetworkStack {
     dns: [10, 0, 2, 3],
     arp_cache: Vec::new(),
     ping_replies: Vec::new(),
+    dns_replies: Vec::new(),
 });
 
 /// Calculates the standard RFC 1071 Internet Checksum.
@@ -231,6 +233,68 @@ pub fn send_icmp_ping(target_ip: [u8; 4], seq: u16) -> Result<(), &'static str> 
     send_ipv4_packet(target_ip, IP_PROTO_ICMP, &icmp)
 }
 
+/// Builds and transmits a UDP datagram over IPv4.
+pub fn send_udp_packet(dest_ip: [u8; 4], src_port: u16, dest_port: u16, payload: &[u8]) -> Result<(), &'static str> {
+    let length = (8 + payload.len()) as u16;
+    let mut udp = Vec::with_capacity(8 + payload.len());
+    udp.extend_from_slice(&src_port.to_be_bytes());
+    udp.extend_from_slice(&dest_port.to_be_bytes());
+    udp.extend_from_slice(&length.to_be_bytes());
+    udp.extend_from_slice(&0u16.to_be_bytes()); // Checksum optional in IPv4 UDP
+    udp.extend_from_slice(payload);
+    send_ipv4_packet(dest_ip, IP_PROTO_UDP, &udp)
+}
+
+/// Resolves a domain name into an IPv4 address using DNS over UDP (RFC 1035).
+pub fn resolve_dns(hostname: &str) -> Result<[u8; 4], &'static str> {
+    let dns_server = NET.lock().dns;
+    let q_id = 0x5432u16;
+
+    let mut query = Vec::with_capacity(64);
+    // Header (12 bytes)
+    query.extend_from_slice(&q_id.to_be_bytes());
+    query.extend_from_slice(&0x0100u16.to_be_bytes()); // Standard query, recursion desired
+    query.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT: 1
+    query.extend_from_slice(&0u16.to_be_bytes()); // ANCOUNT: 0
+    query.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT: 0
+    query.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT: 0
+
+    // Question: QNAME
+    for label in hostname.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return Err("Invalid domain label");
+        }
+        query.push(label.len() as u8);
+        query.extend_from_slice(label.as_bytes());
+    }
+    query.push(0); // Root label
+    query.extend_from_slice(&1u16.to_be_bytes()); // Type A (1)
+    query.extend_from_slice(&1u16.to_be_bytes()); // Class IN (1)
+
+    // Clear previous responses for this ID
+    {
+        let mut net = NET.lock();
+        net.dns_replies.retain(|(id, _)| *id != q_id);
+    }
+
+    // Send query from UDP port 53535 to DNS server port 53
+    send_udp_packet(dns_server, 53535, 53, &query)?;
+
+    // Poll network for answer
+    for _ in 0..600_000 {
+        poll_network();
+        let net = NET.lock();
+        for (id, ip) in &net.dns_replies {
+            if *id == q_id {
+                return Ok(*ip);
+            }
+        }
+        core::hint::spin_loop();
+    }
+
+    Err("DNS resolution timed out")
+}
+
 /// Processes an incoming Ethernet frame and dispatches to ARP or IPv4 handlers.
 pub fn handle_packet(frame: &[u8]) {
     if frame.len() < 14 {
@@ -325,6 +389,9 @@ fn handle_ipv4_packet(_src_mac: [u8; 6], payload: &[u8]) {
         IP_PROTO_ICMP => {
             handle_icmp_packet(src_ip, ttl, ip_payload);
         }
+        IP_PROTO_UDP => {
+            handle_udp_packet(src_ip, ip_payload);
+        }
         _ => {}
     }
 }
@@ -364,6 +431,91 @@ fn handle_icmp_packet(src_ip: [u8; 4], ttl: u8, payload: &[u8]) {
             seq,
             ttl,
         });
+    }
+}
+
+fn handle_udp_packet(_src_ip: [u8; 4], payload: &[u8]) {
+    if payload.len() < 8 {
+        return;
+    }
+    let src_port = u16::from_be_bytes([payload[0], payload[1]]);
+    let dest_port = u16::from_be_bytes([payload[2], payload[3]]);
+    let data = &payload[8..];
+
+    if src_port == 53 || dest_port == 53535 {
+        handle_dns_response(data);
+    }
+}
+
+fn handle_dns_response(data: &[u8]) {
+    if data.len() < 12 {
+        return;
+    }
+    let id = u16::from_be_bytes([data[0], data[1]]);
+    let flags = u16::from_be_bytes([data[2], data[3]]);
+    let qdcount = u16::from_be_bytes([data[4], data[5]]);
+    let ancount = u16::from_be_bytes([data[6], data[7]]);
+
+    if (flags & 0x8000) == 0 || ancount == 0 {
+        return;
+    }
+
+    let mut pos = 12;
+    // Skip Question section
+    for _ in 0..qdcount {
+        while pos < data.len() {
+            let len = data[pos] as usize;
+            if len == 0 {
+                pos += 1;
+                break;
+            }
+            if (len & 0xC0) == 0xC0 {
+                pos += 2;
+                break;
+            }
+            pos += 1 + len;
+        }
+        pos += 4; // QTYPE + QCLASS
+        if pos >= data.len() {
+            return;
+        }
+    }
+
+    // Parse Answers
+    for _ in 0..ancount {
+        if pos >= data.len() {
+            break;
+        }
+        if (data[pos] & 0xC0) == 0xC0 {
+            pos += 2;
+        } else {
+            while pos < data.len() {
+                let len = data[pos] as usize;
+                if len == 0 {
+                    pos += 1;
+                    break;
+                }
+                pos += 1 + len;
+            }
+        }
+        if pos + 10 > data.len() {
+            break;
+        }
+        let rtype = u16::from_be_bytes([data[pos], data[pos + 1]]);
+        let rdlen = u16::from_be_bytes([data[pos + 8], data[pos + 9]]) as usize;
+        pos += 10;
+
+        if rtype == 1 && rdlen == 4 && pos + 4 <= data.len() {
+            let ip = [data[pos], data[pos + 1], data[pos + 2], data[pos + 3]];
+            crate::serial_println!(
+                "[dns    ] resolved ID={:#06x} -> {}.{}.{}.{}",
+                id, ip[0], ip[1], ip[2], ip[3]
+            );
+            let mut net = NET.lock();
+            net.dns_replies.push((id, ip));
+            return;
+        }
+        pos += rdlen;
     }
 }
 

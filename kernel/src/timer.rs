@@ -73,3 +73,75 @@ pub fn wait_ticks(n: u64) {
         x86_64::instructions::hlt();
     }
 }
+
+/// Calendar Date & Time read from CMOS Real-Time Clock (RTC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DateTime {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+}
+
+/// Reads the real-world calendar date and time from the motherboard CMOS RTC.
+pub fn read_rtc() -> DateTime {
+    unsafe {
+        let mut addr_port = Port::<u8>::new(0x70);
+        let mut data_port = Port::<u8>::new(0x71);
+
+        // Wait until RTC update is not in progress
+        for _ in 0..10_000 {
+            addr_port.write(0x0A);
+            if (data_port.read() & 0x80) == 0 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+
+        addr_port.write(0x00);
+        let mut second = data_port.read();
+        addr_port.write(0x02);
+        let mut minute = data_port.read();
+        addr_port.write(0x04);
+        let mut hour = data_port.read();
+        addr_port.write(0x07);
+        let mut day = data_port.read();
+        addr_port.write(0x08);
+        let mut month = data_port.read();
+        addr_port.write(0x09);
+        let mut year = data_port.read();
+
+        // Read register B to check format (BCD vs Binary, 12-hour vs 24-hour)
+        addr_port.write(0x0B);
+        let register_b = data_port.read();
+
+        // Convert BCD to binary if bit 2 is clear
+        if (register_b & 0x04) == 0 {
+            second = (second & 0x0F) + ((second / 16) * 10);
+            minute = (minute & 0x0F) + ((minute / 16) * 10);
+            hour = ((hour & 0x0F) + (((hour & 0x70) / 16) * 10)) | (hour & 0x80);
+            day = (day & 0x0F) + ((day / 16) * 10);
+            month = (month & 0x0F) + ((month / 16) * 10);
+            year = (year & 0x0F) + ((year / 16) * 10);
+        }
+
+        // Convert 12 hour to 24 hour if necessary
+        if (register_b & 0x02) == 0 && (hour & 0x80) != 0 {
+            hour = ((hour & 0x7F) + 12) % 24;
+        }
+
+        let full_year = 2000 + (year as u16);
+
+        DateTime {
+            year: full_year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        }
+    }
+}
+

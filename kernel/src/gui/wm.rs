@@ -1217,40 +1217,42 @@ fn draw_taskbar(g: &mut Graphics, theme: &Theme) {
 ///
 /// `min_x` exists for narrow screens: see `draw_taskbar`.
 fn draw_uptime_stamp(g: &mut Graphics, right: i32, min_x: i32, y: i32, color: Color) {
-    const PREFIX: &str = "Uptime: ";
-    const SUFFIX: &str = " s";
-    let secs = crate::timer::uptime_seconds();
+    let dt = crate::timer::read_rtc();
+    let mut buf = [0u8; 32];
+    let y4 = dt.year;
+    buf[0] = b'0' + ((y4 / 1000) % 10) as u8;
+    buf[1] = b'0' + ((y4 / 100) % 10) as u8;
+    buf[2] = b'0' + ((y4 / 10) % 10) as u8;
+    buf[3] = b'0' + (y4 % 10) as u8;
+    buf[4] = b'-';
+    buf[5] = b'0' + ((dt.month / 10) % 10);
+    buf[6] = b'0' + (dt.month % 10);
+    buf[7] = b'-';
+    buf[8] = b'0' + ((dt.day / 10) % 10);
+    buf[9] = b'0' + (dt.day % 10);
+    buf[10] = b' ';
+    buf[11] = b'0' + ((dt.hour / 10) % 10);
+    buf[12] = b'0' + (dt.hour % 10);
+    buf[13] = b':';
+    buf[14] = b'0' + ((dt.minute / 10) % 10);
+    buf[15] = b'0' + (dt.minute % 10);
+    buf[16] = b':';
+    buf[17] = b'0' + ((dt.second / 10) % 10);
+    buf[18] = b'0' + (dt.second % 10);
+    buf[19] = b' ';
+    buf[20] = b'U';
+    buf[21] = b'T';
+    buf[22] = b'C';
 
-    // Decimal digit count, with 0 counting as one digit (a stopwatch
-    // showing nothing before its first second would look broken).
-    let mut digits = 1u32;
-    let mut rest = secs / 10;
-    while rest > 0 {
-        digits += 1;
-        rest /= 10;
-    }
-
-    let cell = crate::graphics::font::GLYPH_W as i32; // 8 px at scale 1
-    let total =
-        Graphics::text_width(PREFIX, 1) + digits as i32 * cell + Graphics::text_width(SUFFIX, 1);
+    let len = 23;
+    let cell = crate::graphics::font::GLYPH_W as i32; // 8 px
+    let total = len as i32 * cell;
     let mut x = (right - total).max(min_x);
 
-    g.draw_text(x, y, PREFIX, color, None, 1);
-    x += Graphics::text_width(PREFIX, 1);
-
-    // Digits most-significant first: step to the leading place value,
-    // then peel one digit per iteration — `place` divides down to 1, so
-    // the loop emits exactly `digits` glyphs (and 10^(digits-1) always
-    // fits a u64, since digits <= 20).
-    let mut place = 10u64.pow(digits - 1);
-    while place > 0 {
-        let digit = ((secs / place) % 10) as u8;
-        g.draw_char(x, y, char::from(b'0' + digit), color, None, 1);
+    for i in 0..len {
+        g.draw_char(x, y, buf[i] as char, color, None, 1);
         x += cell;
-        place /= 10;
     }
-
-    g.draw_text(x, y, SUFFIX, color, None, 1);
 }
 
 // ---------------------------------------------------------------------------

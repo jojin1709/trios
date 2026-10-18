@@ -200,6 +200,8 @@ impl Terminal {
                 out.push(String::from("netinfo - show network adapter & IP stats"));
                 out.push(String::from("arp - display ARP cache table"));
                 out.push(String::from("ping <ip> - send ICMP Echo Request"));
+                out.push(String::from("date - calendar date & time from RTC"));
+                out.push(String::from("dns <host> - resolve hostname via UDP"));
             }
             "ls" => {
                 let dir = if rest.is_empty() {
@@ -499,6 +501,32 @@ impl Terminal {
                             Err(err) => {
                                 out.push(format!("ping send error: {err}"));
                             }
+                        }
+                    }
+                }
+            }
+            "date" => {
+                let dt = crate::timer::read_rtc();
+                out.push(format!(
+                    "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+                    dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
+                ));
+            }
+            "dns" | "nslookup" => {
+                if rest.is_empty() {
+                    out.push(String::from("usage: dns <hostname> (e.g. dns router)"));
+                } else {
+                    let hostname = split_first(rest).map_or(rest, |(h, _)| h);
+                    out.push(format!("resolving {hostname}..."));
+                    match crate::net::resolve_dns(hostname) {
+                        Ok(ip) => {
+                            out.push(format!(
+                                "{hostname} -> {}.{}.{}.{}",
+                                ip[0], ip[1], ip[2], ip[3]
+                            ));
+                        }
+                        Err(e) => {
+                            out.push(format!("dns error: {e}"));
                         }
                     }
                 }
