@@ -25,6 +25,7 @@ mod serial;
 
 mod allocator;
 mod apps;
+mod drivers;
 mod event;
 mod fs;
 mod gdt;
@@ -176,6 +177,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     // Phase 6: Initialize fast syscall subsystem (MSRs + sys_call_table)
     syscall::init();
+
+    // Phase 7: PCI bus enumeration & AHCI SATA block storage driver
+    let _sata = drivers::AhciController::init(phys_offset);
 
     // Spawn a background kernel worker thread to verify concurrent multitasking
     sched::spawn("background_worker", background_worker);

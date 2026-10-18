@@ -70,6 +70,7 @@ TriOS has completed **Phase 0 through Phase 5**:
 | **Phase 4** | Shell, VFS & Text Fields | **Done** | In-memory RAM filesystem (`ramfs`), TextInput widgets, Files Explorer, Text Editor, Terminal shell |
 | **Phase 5** | Preemptive Multitasking | **Done** | Thread control blocks, cooperative/preemptive scheduler, context switching (`switch_context`), background worker |
 | **Phase 6** | User Descriptors & Syscalls | **Done** | GDT User DPL-3 code/data, TSS RSP0 privilege stack, IA32_EFER/STAR/LSTAR/FMASK MSRs, fast `syscall` dispatcher |
+| **Phase 7** | PCI Bus & AHCI SATA Driver | **Done** | PCI configuration space scanner, AHCI Generic Host Control MMIO, SATA disk device detection |
 
 ---
 
@@ -222,7 +223,7 @@ graph TD
 - [x] **Phase 4**: In-memory VFS, text inputs, Terminal, Editor, Files Explorer
 - [x] **Phase 5**: Kernel threads, context switching & round-robin scheduler
 - [x] **Phase 6**: Ring 3 User Descriptors, TSS RSP0 switching, fast `syscall`/`sysret` MSRs & dispatcher
-- [ ] **Phase 7**: PCI bus enumeration & AHCI SATA block storage driver
+- [x] **Phase 7**: PCI bus enumeration & AHCI SATA block storage driver
 - [ ] **Phase 8**: Persistent FAT32 filesystem & standalone ELF executable loader
 
 ---
