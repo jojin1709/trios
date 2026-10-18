@@ -521,9 +521,14 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
     // handed over here rather than the WM ever looking at `apps` or
     // matching window titles (see `WindowManager::set_taskbar_targets`).
     // Until this line the buttons draw but every click reports `None`.
-    wm.set_taskbar_targets(apps.explorer.win, apps.editor.win, apps.terminal.win);
+    wm.set_taskbar_targets(
+        apps.explorer.win,
+        apps.editor.win,
+        apps.terminal.win,
+        apps.browser.win,
+    );
     apps.refresh(&mut wm, &ramfs);
-    serial_println!("[apps  ] shell ready: Files, Editor, Terminal");
+    serial_println!("[apps  ] shell ready: Files, Editor, Terminal, Browser");
 
     // Welcome starts focused (it was created first; re-assert so the
     // titlebar/border styling and Esc target are unambiguous).
@@ -746,6 +751,7 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                                 KeyCode::Char('1') => Some((apps.explorer.win, "Files")),
                                 KeyCode::Char('2') => Some((apps.editor.win, "Editor")),
                                 KeyCode::Char('3') => Some((apps.terminal.win, "Terminal")),
+                                KeyCode::Char('4') => Some((apps.browser.win, "Browser")),
                                 _ => None,
                             };
                             if let Some((id, name)) = target {

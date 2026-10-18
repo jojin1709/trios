@@ -207,6 +207,7 @@ impl Terminal {
                 out.push(String::from("acpi - inspect ACPI tables & power config"));
                 out.push(String::from("poweroff - ACPI S5 shutdown computer"));
                 out.push(String::from("reboot - hardware restart computer"));
+                out.push(String::from("apps: Ctrl+1=Files, Ctrl+2=Editor, Ctrl+3=Term, Ctrl+4=Browser"));
             }
             "ls" => {
                 let dir = if rest.is_empty() {

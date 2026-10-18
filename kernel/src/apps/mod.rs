@@ -40,23 +40,25 @@
 pub mod editor;
 pub mod explorer;
 pub mod terminal;
+pub mod browser;
 
 use alloc::string::String;
 
 pub use editor::Editor;
 pub use explorer::Explorer;
 pub use terminal::Terminal;
+pub use browser::Browser;
 
 use crate::event::KeyEvent;
 use crate::fs::FileSystem;
 use crate::gui::{Theme, WidgetAction, WindowManager};
 
-/// The shell's three applications plus their window ids.
+/// The shell's four applications plus their window ids.
 ///
 /// Create once at boot with [`Apps::new`] — the windows exist from the
 /// first frame (the CI screenshots at 3/8/15/30 s prove it) rather than
 /// appearing on first click, which also means the taskbar buttons and
-/// the `Ctrl+1/2/3` hotkeys have something to focus immediately after
+/// the `Ctrl+1/2/3/4` hotkeys have something to focus immediately after
 /// `desktop_run` starts.
 pub struct Apps {
     /// The "Files" window: browse, select, create.
@@ -65,18 +67,19 @@ pub struct Apps {
     pub editor: Editor,
     /// The "Terminal" window: a command line over the same ramfs.
     pub terminal: Terminal,
+    /// The "Browser" window: graphical web browser over TCP/HTTP.
+    pub browser: Browser,
 }
 
 impl Apps {
-    /// Builds all three app windows on `wm` (in that z-order) and
-    /// returns the shell. Nothing touches the filesystem yet — the
-    /// constructor runs before `main.rs` hands out its `ramfs`, so the
-    /// fs-backed views are primed by [`Apps::refresh`] one line later.
+    /// Builds all four app windows on `wm` (in that z-order) and
+    /// returns the shell.
     pub fn new(wm: &mut WindowManager, theme: &Theme) -> Self {
         Self {
             explorer: Explorer::new(wm, theme),
             editor: Editor::new(wm, theme),
             terminal: Terminal::new(wm, theme),
+            browser: Browser::new(wm, theme),
         }
     }
 
@@ -100,6 +103,7 @@ impl Apps {
         window_id == self.explorer.win
             || window_id == self.editor.win
             || window_id == self.terminal.win
+            || window_id == self.browser.win
     }
 
     /// Is one of the shell's windows the *focused* one? (Convenience
@@ -109,11 +113,7 @@ impl Apps {
     }
 
     /// Routes one finished pointer interaction (button press/release) to
-    /// the app that owns the widget. Actions from windows the shell
-    /// doesn't own — the Phase 3 demo windows — are ignored here and
-    /// handled in `main.rs`, which keeps the demo wiring where it was.
-    ///
-    /// Returns `true` when a label/row the user can see was rewritten.
+    /// the app that owns the widget.
     pub fn on_action(
         &mut self,
         action: WidgetAction,
@@ -122,9 +122,6 @@ impl Apps {
         theme: &Theme,
     ) -> bool {
         if action.window_id == self.explorer.win {
-            // `self.explorer` and `self.editor` are disjoint fields, so
-            // lending both out at once is fine — the explorer opens
-            // files straight into the editor's filename box.
             self.explorer.on_action(
                 action.widget_index,
                 action.outcome,
@@ -139,22 +136,15 @@ impl Apps {
         } else if action.window_id == self.terminal.win {
             self.terminal
                 .on_action(action.widget_index, action.outcome, wm)
+        } else if action.window_id == self.browser.win {
+            self.browser
+                .on_action(action.widget_index, action.outcome, wm)
         } else {
             false
         }
     }
 
     /// Routes one key press to the focused app.
-    ///
-    /// `main.rs` calls this both when no text field has focus *and*
-    /// when a field inside an app window does: a `TextInput`
-    /// deliberately does not consume Enter/arrow keys (see
-    /// [`crate::gui::widgets::TextInput::handle_key`]), so submitting a
-    /// command, loading a file or moving a selection is the app's call.
-    /// The actual caret editing still happens in `main.rs`, one line
-    /// later, via `wm.handle_key`.
-    ///
-    /// Returns `true` when something visible changed.
     pub fn on_key(
         &mut self,
         event: KeyEvent,
@@ -171,6 +161,8 @@ impl Apps {
             self.editor.on_key(event, wm, fs)
         } else if window_id == self.terminal.win {
             self.terminal.on_key(event, wm, fs)
+        } else if window_id == self.browser.win {
+            self.browser.on_key(event, wm)
         } else {
             false
         }

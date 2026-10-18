@@ -341,9 +341,10 @@ impl E1000Driver {
             self.tx_cur = (cur + 1) % NUM_TX_DESCS;
             write_reg(self.mmio_base, REG_TDT, self.tx_cur as u32);
 
-            // Wait for completion (Descriptor Done bit 0)
-            let mut spin = 50_000;
-            while (desc.status & 1) == 0 && spin > 0 {
+            // Wait for completion (Descriptor Done bit 0) via volatile read
+            let status_ptr = core::ptr::addr_of!(desc.status);
+            let mut spin = 2_000_000;
+            while (core::ptr::read_volatile(status_ptr) & 1) == 0 && spin > 0 {
                 core::hint::spin_loop();
                 spin -= 1;
             }
@@ -362,13 +363,14 @@ impl E1000Driver {
     pub fn receive(&mut self) -> Option<Vec<u8>> {
         let next = (self.rx_cur + 1) % NUM_RX_DESCS;
         let desc = unsafe { &mut *self.rx_descs_ptr.add(next) };
+        let status = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(desc.status)) };
 
-        if (desc.status & 1) != 0 {
+        if (status & 1) != 0 {
             let len = desc.length as usize;
             let mut packet = vec![0u8; len];
             unsafe {
                 core::ptr::copy_nonoverlapping(self.rx_buffers[next], packet.as_mut_ptr(), len);
-                desc.status = 0;
+                core::ptr::write_volatile(core::ptr::addr_of_mut!(desc.status), 0);
                 write_reg(self.mmio_base, REG_RDT, next as u32);
             }
 

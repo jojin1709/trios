@@ -81,6 +81,7 @@ TriOS has completed **Phase 0 through Phase 12**:
 
 ## Key Features
 
+- **GUI Web Browser Application**: Interactive desktop web browser window featuring a URL address bar, 'Go' button, Enter key navigation, HTML tag tokenizer and text formatting engine, and scrollable viewport with line counter footer, accessible via taskbar button or `Ctrl+4` hotkey.
 - **TCP Protocol Stack & HTTP/1.0 Web Client**: Full RFC 793 Transmission Control Protocol (pseudo-header checksums, 3-way handshake SYN/SYN-ACK/ACK, stream transmission, and FIN/ACK teardown) and bare-metal HTTP/1.0 client (`curl <url>`) resolving DNS and fetching live web pages directly over the Internet from within the bare-metal OS.
 - **ACPI Power Management & Hardware Reset**: Full ACPI table discovery (RSDP, XSDT, FADT, MADT, DSDT AML), CPU core detection, ACPI S5 poweroff (`poweroff`), and hardware reboot (`reboot`).
 - **UDP Protocol & RFC 1035 DNS Resolver**: User Datagram Protocol over IPv4 and domain name resolution querying DNS servers (`10.0.2.3:53`) to resolve Internet hosts into IP addresses (`dns example.com -> 104.20.23.154`).
@@ -91,9 +92,10 @@ TriOS has completed **Phase 0 through Phase 12**:
 - **Preemptive Kernel Multitasking**: Round-robin thread scheduler running background threads concurrently with the desktop GUI event loop.
 - **Interactive Window Manager**: Real-time window dragging, resizing via bottom-right grip, focus switching, and z-ordering.
 - **Built-in Shell Applications**:
-  - **Terminal**: Interactive CLI supporting commands (`help`, `uptime`, `clear`, `elfinfo`, `elfrun`, `disks`, `gpt`, `fatls`, `netinfo`, `arp`, `ping`, `date`, `dns`, `tcp`, `curl`, `acpi`, `poweroff`, `reboot`).
-  - **Files Explorer**: Interactive directory browsing of the in-memory virtual filesystem.
-  - **Text Editor**: Live text buffer editing with load and save integration into `ramfs`.
+  - **Browser**: Graphical web browser over TCP/HTTP with address bar, HTML formatting, and scrolling (`Ctrl+4`).
+  - **Terminal**: Interactive CLI supporting commands (`help`, `uptime`, `clear`, `elfinfo`, `elfrun`, `disks`, `gpt`, `fatls`, `netinfo`, `arp`, `ping`, `date`, `dns`, `tcp`, `curl`, `acpi`, `poweroff`, `reboot`, `Ctrl+3`).
+  - **Files Explorer**: Interactive directory browsing of the in-memory virtual filesystem (`Ctrl+1`).
+  - **Text Editor**: Live text buffer editing with load and save integration into `ramfs` (`Ctrl+2`).
   - **Welcome & Playground**: Demo widgets showcasing buttons, click counters, sliders, and progress bars.
 - **Dual Input Drivers**: Native PS/2 mouse and keyboard decoders with automatic arrow-key keyboard mouse emulation if hypervisor mouse capture is unavailable.
 - **Hardware Telemetry & Logging**: Real-time TSC calibration, COM1 serial output, and per-frame performance tracking.

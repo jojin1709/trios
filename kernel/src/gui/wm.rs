@@ -236,6 +236,7 @@ struct TaskbarTargets {
     files: u64,
     editor: u64,
     terminal: u64,
+    browser: u64,
 }
 
 /// The compositor + interaction state machine.
@@ -590,11 +591,12 @@ impl WindowManager {
     /// [`taskbar_click`] answers `None`.
     ///
     /// [`taskbar_click`]: Self::taskbar_click
-    pub fn set_taskbar_targets(&mut self, files: u64, editor: u64, terminal: u64) {
+    pub fn set_taskbar_targets(&mut self, files: u64, editor: u64, terminal: u64, browser: u64) {
         self.taskbar_targets = Some(TaskbarTargets {
             files,
             editor,
             terminal,
+            browser,
         });
     }
 
@@ -604,16 +606,6 @@ impl WindowManager {
     /// exists (the user can Esc/X an app away; focusing a dead id would
     /// poison `focused_id`, see [`focus`], so the click simply does
     /// nothing).
-    ///
-    /// Pure hit-testing — no state is touched, which is what lets
-    /// [`handle_mouse`] call it before *any* window is considered and
-    /// decide who owns the press from its answer alone. The rects come
-    /// from [`taskbar_button_rects`], the same function `draw_taskbar`
-    /// paints from, so the visible buttons and the clickable ones cannot
-    /// drift apart.
-    ///
-    /// [`set_taskbar_targets`]: Self::set_taskbar_targets
-    /// [`focus`]: Self::focus
     pub fn taskbar_click(&self, x: i32, y: i32) -> Option<u64> {
         let targets = self.taskbar_targets?;
         let idx = taskbar_button_rects(self.screen_h)
@@ -622,7 +614,8 @@ impl WindowManager {
         let id = match idx {
             0 => targets.files,
             1 => targets.editor,
-            _ => targets.terminal,
+            2 => targets.terminal,
+            _ => targets.browser,
         };
         self.windows.iter().any(|w| w.id == id).then_some(id)
     }
@@ -1013,7 +1006,7 @@ const HINT_PAD: i32 = 6;
 /// depends on IRQ12, while every key it names is proven by the
 /// keyboard's own climbing `kb irq count`.
 const HINT_LINES: [&str; 1] = [
-    "Click here to capture input | Right Ctrl = release | Arrows = move | Space/Enter = click | Esc = close | Ctrl+1/2/3 = apps",
+    "Click here to capture input | Right Ctrl = release | Arrows = move | Space/Enter = click | Esc = close | Ctrl+1/2/3/4 = apps",
 ];
 /// One text line's height in pixels at [`HINT_SCALE`] (8 × 1 = 8 px).
 const HINT_LINE_H: i32 = crate::graphics::font::GLYPH_H as i32 * HINT_SCALE as i32;
@@ -1112,25 +1105,19 @@ const TASKBAR_BTN_H: i32 = TASKBAR_H - TASKBAR_PAD_Y * 2;
 /// [`WindowManager::taskbar_click`] resolves against
 /// [`TaskbarTargets`]' same-ordered fields — one array defines the whole
 /// left-to-right contract.
-const TASKBAR_LABELS: [&str; 3] = ["Files", "Editor", "Terminal"];
+const TASKBAR_LABELS: [&str; 4] = ["Files", "Editor", "Terminal", "Browser"];
 
-/// The three button rects in **global** coordinates, left to right:
+/// The four button rects in **global** coordinates, left to right:
 ///
 /// ```text
-/// Files     x   8 ..  98     Editor    x 102 .. 192     Terminal  x 196 .. 286
+/// Files     x   8 ..  98     Editor    x 102 .. 192
+/// Terminal  x 196 .. 286     Browser   x 290 .. 380
 /// all       y = (strip top) + TASKBAR_PAD_Y, h = TASKBAR_BTN_H (16)
 /// ```
-///
-/// `screen_h` rather than `&self` so the drawing path — which only holds
-/// a `Graphics`, not the WM — can build the very same rects: `draw_taskbar`
-/// and [`WindowManager::taskbar_click`] sharing this one function is what
-/// guarantees the clickable region is exactly the painted button (no
-/// "invisible hit zone" class of bug, no duplicated arithmetic to keep in
-/// sync).
-fn taskbar_button_rects(screen_h: i32) -> [Rect; 3] {
+fn taskbar_button_rects(screen_h: i32) -> [Rect; 4] {
     let y = screen_h - HINT_BAR_H - TASKBAR_H + TASKBAR_PAD_Y;
     let mut x = TASKBAR_X0;
-    let mut rects = [Rect::new(0, 0, TASKBAR_BTN_W, TASKBAR_BTN_H); 3];
+    let mut rects = [Rect::new(0, 0, TASKBAR_BTN_W, TASKBAR_BTN_H); 4];
     for r in &mut rects {
         r.x = x;
         r.y = y;
@@ -1139,42 +1126,15 @@ fn taskbar_button_rects(screen_h: i32) -> [Rect; 3] {
     rects
 }
 
-/// Draws the taskbar strip: body, 1 px top rule, three buttons, uptime
-/// stamp.
-///
-/// Occupies `y = height - HINT_BAR_H - TASKBAR_H .. height - HINT_BAR_H`
-/// (752..780 on the CI 1280×800 framebuffer, 720..748 on the local
-/// 1024×768 VirtualBox one — see [`TASKBAR_H`] for the full stack-up).
-/// Painted after [`draw_hint_bar`] and before [`draw_cursor`]: it is OS
-/// chrome over the windows, with the pointer still topmost.
-///
-/// Like the hint bar, every primitive here clips, so a screen narrower
-/// than the 286 px the buttons need simply loses the right-most button
-/// pixels rather than panicking — and a screen shorter than the bars
-/// draws with a negative `y`, which `fill_rect` clips away.
+/// Draws the taskbar strip: body, 1 px top rule, buttons, clock stamp.
 fn draw_taskbar(g: &mut Graphics, theme: &Theme) {
     let w = g.width() as i32;
     let h = g.height() as i32;
     let y = h - HINT_BAR_H - TASKBAR_H;
 
-    // Strip body: `window_bg`, deliberately *not* `theme.bg`. The button
-    // faces are `button_bg` (0x21262D), so the strip must be darker than
-    // the buttons for them to read as raised chips — and lighter than
-    // the raw desktop (0x0D1117) so the strip reads as a surface of its
-    // own rather than a hole in the wallpaper.
     g.fill_rect(0, y, w as u32, TASKBAR_H as u32, theme.window_bg);
-    // 1 px rule on the top edge — the same chrome cue `draw_hint_bar`
-    // uses, so the two bottom strips read as one piece of furniture
-    // instead of a stray line across the desktop.
     g.fill_rect(0, y, w as u32, 1, theme.text_primary);
 
-    // Buttons: filled face + 1 px border + caption centered with the
-    // integer math `widgets::Button::draw` uses (scale 1 = 8 px cells).
-    // Resting state only — hover/press styling would need the WM to
-    // track pointer state over the bar (pointer events are consumed by
-    // the band before any widget sees them, see `handle_mouse`), and the
-    // focus cue the user actually needs is the target window's own
-    // titlebar lighting up.
     let buttons = taskbar_button_rects(h);
     for (label, r) in TASKBAR_LABELS.iter().zip(buttons.iter()) {
         g.fill_rect(r.x, r.y, r.w as u32, r.h as u32, theme.button_bg);
@@ -1191,14 +1151,8 @@ fn draw_taskbar(g: &mut Graphics, theme: &Theme) {
         );
     }
 
-    // Right-aligned uptime stamp, `TASKBAR_X0` px from the strip's edge
-    // and vertically centered in the strip (8 px tall text in a 28 px
-    // band => 10 px above it, sitting level with the button captions).
-    // `buttons[2].right() + TASKBAR_X0` is the *left* limit: on a screen
-    // too narrow for both, the buttons win and the stamp shifts right,
-    // letting the text primitive clip whatever runs off the edge.
     let stamp_y = y + (TASKBAR_H - Graphics::text_height(1)) / 2;
-    let min_x = buttons[2].right() + TASKBAR_X0;
+    let min_x = buttons[3].right() + TASKBAR_X0;
     draw_uptime_stamp(g, w - TASKBAR_X0, min_x, stamp_y, theme.text_secondary);
 }
 
