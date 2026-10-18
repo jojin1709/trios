@@ -18,7 +18,7 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
-    structures::paging::{FrameAllocator, PageTable, PhysFrame, Size4KiB},
+    structures::paging::{FrameAllocator, PageTable, PageTableFlags, PhysFrame, Size4KiB},
 };
 
 /// x86 page size (4 KiB) — the only frame size Phase 1 allocates.
@@ -193,4 +193,80 @@ pub fn log_page_table(physical_memory_offset: VirtAddr) {
         "[memory ] page tables: active L4 at phys {:#x} ({used}/512 entries used)",
         frame.start_address().as_u64()
     );
+}
+
+static PHYS_OFFSET: spin::Mutex<Option<VirtAddr>> = spin::Mutex::new(None);
+
+/// Saves physical memory offset for future page-table operations.
+pub fn init_memory(physical_memory_offset: VirtAddr) {
+    *PHYS_OFFSET.lock() = Some(physical_memory_offset);
+}
+
+/// Clears the `NO_EXECUTE` permission bit for all page-table entries covering
+/// the given virtual address range so user ELF code can execute.
+pub fn make_executable_range(start: VirtAddr, size: usize) {
+    let phys_offset = match *PHYS_OFFSET.lock() {
+        Some(offset) => offset,
+        None => return,
+    };
+
+    let (l4, _) = unsafe { active_level_4_table(phys_offset) };
+
+    let end = start + (size as u64).max(1);
+    let mut curr = start.as_u64() & !0xFFF;
+    let end_aligned = (end.as_u64() + 0xFFF) & !0xFFF;
+
+    while curr < end_aligned {
+        let virt = VirtAddr::new(curr);
+
+        let l4_idx = virt.p4_index();
+        let l4_entry = &mut l4[l4_idx];
+        if l4_entry.is_unused() {
+            curr += 4096;
+            continue;
+        }
+        l4_entry.set_addr(l4_entry.addr(), l4_entry.flags() - PageTableFlags::NO_EXECUTE);
+
+        let l3_addr = phys_offset + l4_entry.addr().as_u64();
+        let l3 = unsafe { &mut *(l3_addr.as_u64() as *mut PageTable) };
+        let l3_idx = virt.p3_index();
+        let l3_entry = &mut l3[l3_idx];
+        if l3_entry.is_unused() {
+            curr += 4096;
+            continue;
+        }
+        l3_entry.set_addr(l3_entry.addr(), l3_entry.flags() - PageTableFlags::NO_EXECUTE);
+
+        if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            curr += 1024 * 1024 * 1024;
+            continue;
+        }
+
+        let l2_addr = phys_offset + l3_entry.addr().as_u64();
+        let l2 = unsafe { &mut *(l2_addr.as_u64() as *mut PageTable) };
+        let l2_idx = virt.p2_index();
+        let l2_entry = &mut l2[l2_idx];
+        if l2_entry.is_unused() {
+            curr += 4096;
+            continue;
+        }
+        l2_entry.set_addr(l2_entry.addr(), l2_entry.flags() - PageTableFlags::NO_EXECUTE);
+
+        if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            curr += 2 * 1024 * 1024;
+            continue;
+        }
+
+        let l1_addr = phys_offset + l2_entry.addr().as_u64();
+        let l1 = unsafe { &mut *(l1_addr.as_u64() as *mut PageTable) };
+        let l1_idx = virt.p1_index();
+        let l1_entry = &mut l1[l1_idx];
+        if !l1_entry.is_unused() {
+            l1_entry.set_addr(l1_entry.addr(), l1_entry.flags() - PageTableFlags::NO_EXECUTE);
+        }
+
+        curr += 4096;
+    }
+
+    x86_64::instructions::tlb::flush_all();
 }

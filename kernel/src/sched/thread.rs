@@ -36,6 +36,9 @@ pub struct Thread {
     /// Backing heap allocation for the thread stack (kept alive as long as thread lives).
     #[allow(dead_code)]
     stack: Option<Vec<u8>>,
+    /// Backing heap allocation for loaded executable code/data (kept alive until thread dies).
+    #[allow(dead_code)]
+    image: Option<Vec<u8>>,
 }
 
 impl Thread {
@@ -47,11 +50,22 @@ impl Thread {
             state: ThreadState::Running,
             rsp: 0, // Will be populated on the first context switch away from it
             stack: None, // Uses bootloader kernel stack
+            image: None,
         }
     }
 
     /// Spawns a new kernel thread with the given entry function.
     pub fn new(name: &str, entry: extern "C" fn()) -> Box<Self> {
+        Self::new_raw(name, entry as *const () as usize, None)
+    }
+
+    /// Spawns a thread for a loaded ELF executable, keeping its backing image buffer alive.
+    pub fn new_with_image(name: &str, entry_addr: usize, image: Vec<u8>) -> Box<Self> {
+        Self::new_raw(name, entry_addr, Some(image))
+    }
+
+    /// Constructs a thread frame pointing to any arbitrary entry address.
+    pub fn new_raw(name: &str, entry_addr: usize, image: Option<Vec<u8>>) -> Box<Self> {
         let id = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
         let mut stack = vec![0u8; STACK_SIZE];
 
@@ -84,7 +98,7 @@ impl Thread {
             *stack_ptr.add(6) = thread_trampoline as *const () as usize; // Return address for ret
             *stack_ptr.add(5) = 0;                                      // rbp
             *stack_ptr.add(4) = 0;                                      // rbx
-            *stack_ptr.add(3) = entry as *const () as usize;            // r12 = function pointer
+            *stack_ptr.add(3) = entry_addr;                             // r12 = function pointer
             *stack_ptr.add(2) = 0;                                      // r13
             *stack_ptr.add(1) = 0;                                      // r14
             *stack_ptr.add(0) = 0;                                      // r15
@@ -96,6 +110,7 @@ impl Thread {
             state: ThreadState::Ready,
             rsp,
             stack: Some(stack),
+            image,
         })
     }
 }

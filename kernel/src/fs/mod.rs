@@ -37,6 +37,8 @@
 // here (and only here), exactly like `graphics::splash` above.
 #![allow(dead_code)]
 
+pub mod elf;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -64,8 +66,8 @@ struct Node {
     /// key (`""` is never stored; the root exists implicitly).
     path: String,
     is_dir: bool,
-    /// File payload. Always `String::new()` for directories.
-    contents: String,
+    /// File payload in bytes. Always empty for directories.
+    contents: Vec<u8>,
 }
 
 /// The in-memory filesystem. Create with [`FileSystem::new`] — the
@@ -122,6 +124,7 @@ impl FileSystem {
     /// * `/readme.txt`        — a short welcome note;
     /// * `/notes/hello.txt`   — proves nested directories work;
     /// * `/notes/todo.txt`    — a second file in the same directory.
+    /// * `/bin/hello.elf`     — valid ELF64 executable.
     pub fn new() -> Self {
         let mut fs = Self { nodes: Vec::new() };
         // Seed contents are constants, so these writes cannot fail
@@ -130,7 +133,8 @@ impl FileSystem {
             "/readme.txt",
             "Welcome to TriOS!\n\n\
              This filesystem lives entirely in RAM — nothing here survives a reboot.\n\
-             Phase 4: File Explorer, Text Editor, Terminal.",
+             Phase 4: File Explorer, Text Editor, Terminal.\n\
+             Phase 8: Standalone ELF Executable Loader.",
         );
         fs.write(
             "/notes/hello.txt",
@@ -138,8 +142,9 @@ impl FileSystem {
         );
         fs.write(
             "/notes/todo.txt",
-            "- File Explorer\n- Text Editor\n- Terminal\n- [x] in-memory VFS",
+            "- File Explorer\n- Text Editor\n- Terminal\n- [x] in-memory VFS\n- [x] ELF64 Loader",
         );
+        fs.write_bytes("/bin/hello.elf", &crate::fs::elf::create_sample_elf());
         fs
     }
 
@@ -175,21 +180,32 @@ impl FileSystem {
         entries
     }
 
-    /// A file's contents, or `None` when the path is missing *or* is a
-    /// directory (listing a dir as text is a type error, not a success).
+    /// A file's contents decoded as UTF-8 string, or `None` when missing,
+    /// a directory, or non-UTF8 binary data.
     pub fn read(&self, path: &str) -> Option<&str> {
+        self.read_bytes(path)
+            .and_then(|bytes| core::str::from_utf8(bytes).ok())
+    }
+
+    /// A file's raw contents in bytes, or `None` when the path is missing or is a directory.
+    pub fn read_bytes(&self, path: &str) -> Option<&[u8]> {
         let path = normalize(path);
         self.nodes
             .iter()
             .find(|n| n.path == path && !n.is_dir)
-            .map(|n| n.contents.as_str())
+            .map(|n| n.contents.as_slice())
     }
 
-    /// Creates or overwrites the file at `path`, creating any missing
+    /// Creates or overwrites the file at `path` with a text string.
+    pub fn write(&mut self, path: &str, contents: &str) -> bool {
+        self.write_bytes(path, contents.as_bytes())
+    }
+
+    /// Creates or overwrites the file at `path` with raw bytes, creating any missing
     /// parent directories (`mkdir -p` semantics). Returns `false` only
     /// for an invalid path — the empty/root path, which names a
     /// directory and therefore cannot be a file.
-    pub fn write(&mut self, path: &str, contents: &str) -> bool {
+    pub fn write_bytes(&mut self, path: &str, contents: &[u8]) -> bool {
         let path = normalize(path);
         if path.is_empty() {
             // The root is a directory; "writing" it is a caller bug.
@@ -205,19 +221,13 @@ impl FileSystem {
         }
         // Now the file node itself: overwrite in place if present.
         if let Some(node) = self.nodes.iter_mut().find(|n| n.path == path) {
-            // A *directory* already occupying the path is replaced by a
-            // file (create-or-overwrite, per the API contract). Its
-            // children — if any — are orphaned under a now-file prefix;
-            // `list`/`read` still behave (no panics), they just aren't
-            // reachable through this name. Acceptable for a ramfs whose
-            // only writer is a human at a prompt.
             node.is_dir = false;
-            node.contents = String::from(contents);
+            node.contents = contents.to_vec();
         } else {
             self.nodes.push(Node {
                 path,
                 is_dir: false,
-                contents: String::from(contents),
+                contents: contents.to_vec(),
             });
         }
         true
@@ -237,10 +247,7 @@ impl FileSystem {
     }
 
     /// Makes sure the directory `path` (already normalized, never root)
-    /// has a node. Idempotent. If a *file* sits on the path, it is left
-    /// alone: `write` only needs the prefix chain to be walkable, and
-    /// silently deleting file data to make room for a dir would be worse
-    /// than the (harmless) oddity of children under a file-shaped name.
+    /// has a node. Idempotent.
     fn ensure_dir(&mut self, path: &str) {
         if path.is_empty() || self.nodes.iter().any(|n| n.path == path) {
             return;
@@ -248,7 +255,7 @@ impl FileSystem {
         self.nodes.push(Node {
             path: String::from(path),
             is_dir: true,
-            contents: String::new(),
+            contents: Vec::new(),
         });
     }
 }

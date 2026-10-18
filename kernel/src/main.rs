@@ -96,6 +96,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     });
     serial_println!("[boot   ] direct map of physical memory at {phys_offset:#x}");
+    memory::init_memory(phys_offset);
 
     // Take the bootloader's framebuffer handle out of the boot info now
     // (while we're borrowing `boot_info` for reads anyway). The actual

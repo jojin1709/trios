@@ -192,6 +192,8 @@ impl Terminal {
                 out.push(String::from("clear - clear scrollback"));
                 out.push(String::from("mem - free heap bytes"));
                 out.push(String::from("uptime - seconds since boot"));
+                out.push(String::from("elfinfo <path> - inspect ELF executable"));
+                out.push(String::from("elfrun <path> - load and execute ELF binary"));
             }
             "ls" => {
                 let dir = if rest.is_empty() {
@@ -199,9 +201,8 @@ impl Terminal {
                 } else {
                     split_first(rest).map_or(rest, |(d, _)| d)
                 };
-                if fs.read(dir).is_some() {
-                    // `ls <file>` prints the file itself (POSIX-style),
-                    // rather than pretending it is a directory.
+                if fs.exists(dir) && fs.read(dir).is_none() && !dir.ends_with('/') && fs.read_bytes(dir).is_some() {
+                    // Regular file: print itself
                     out.push(String::from(dir));
                 } else if !fs.exists(dir) {
                     out.push(format!("file not found: {dir}"));
@@ -225,9 +226,15 @@ impl Terminal {
                 } else {
                     let path = split_first(rest).map_or(rest, |(p, _)| p);
                     match fs.read(path) {
-                        // A missing path and a directory both answer
+                        // A missing path, binary file, and a directory all answer
                         // `None` — neither is text, neither panics.
-                        None => out.push(format!("file not found: {path}")),
+                        None => {
+                            if fs.exists(path) {
+                                out.push(format!("binary file or directory: {path}"));
+                            } else {
+                                out.push(format!("file not found: {path}"));
+                            }
+                        }
                         Some("") => out.push(String::from("(empty)")),
                         Some(text) => {
                             for line in text.split('\n') {
@@ -258,6 +265,57 @@ impl Terminal {
                 crate::allocator::remaining()
             )),
             "uptime" => out.push(format!("uptime: {} s", crate::timer::uptime_seconds())),
+            "elfinfo" => {
+                if rest.is_empty() {
+                    out.push(String::from("usage: elfinfo <path>"));
+                } else {
+                    let path = split_first(rest).map_or(rest, |(p, _)| p);
+                    match fs.read_bytes(path) {
+                        None => out.push(format!("file not found: {path}")),
+                        Some(bytes) => {
+                            match crate::fs::elf::parse_header(bytes) {
+                                Ok(hdr) => {
+                                    out.push(format!("ELF64 entry: {:#x}", hdr.entry_point));
+                                    out.push(format!("program headers: count={}", hdr.ph_num));
+                                    for i in 0..hdr.ph_num {
+                                        if let Some(ph) = crate::fs::elf::parse_program_header(bytes, &hdr, i) {
+                                            out.push(format!(
+                                                "PH#{i}: type={} vaddr={:#x} memsz={}",
+                                                ph.p_type, ph.p_vaddr, ph.p_memsz
+                                            ));
+                                        }
+                                    }
+                                }
+                                Err(err) => out.push(format!("not an ELF binary: {err:?}")),
+                            }
+                        }
+                    }
+                }
+            }
+            "elfrun" => {
+                if rest.is_empty() {
+                    out.push(String::from("usage: elfrun <path>"));
+                } else {
+                    let path = split_first(rest).map_or(rest, |(p, _)| p);
+                    match fs.read_bytes(path) {
+                        None => out.push(format!("file not found: {path}")),
+                        Some(bytes) => {
+                            match crate::fs::elf::load_executable(bytes) {
+                                Ok(loaded) => {
+                                    let entry = loaded.entry_point;
+                                    let tid = crate::sched::spawn_elf(
+                                        path,
+                                        entry,
+                                        loaded.image,
+                                    );
+                                    out.push(format!("spawned ELF thread #{tid} (entry={entry:#x})"));
+                                }
+                                Err(err) => out.push(format!("ELF load error: {err:?}")),
+                            }
+                        }
+                    }
+                }
+            }
             "" => {}
             other => out.push(format!("unknown command: {other} - try 'help'")),
         }

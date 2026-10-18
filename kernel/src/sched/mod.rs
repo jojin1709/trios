@@ -98,6 +98,16 @@ pub fn spawn(name: &str, entry: extern "C" fn()) -> ThreadId {
     })
 }
 
+/// Spawns a new thread executing a loaded ELF binary with a backing image buffer.
+pub fn spawn_elf(name: &str, entry_addr: usize, image: Vec<u8>) -> ThreadId {
+    interrupts::without_interrupts(|| {
+        let mut lock = SCHEDULER.lock();
+        let sched = lock.as_mut().expect("scheduler not initialized");
+        let t = Thread::new_with_image(name, entry_addr, image);
+        sched.spawn(t)
+    })
+}
+
 /// Yields CPU execution to the next ready thread.
 pub fn yield_now() {
     switch(false, None);
