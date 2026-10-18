@@ -202,6 +202,8 @@ impl Terminal {
                 out.push(String::from("ping <ip> - send ICMP Echo Request"));
                 out.push(String::from("date - calendar date & time from RTC"));
                 out.push(String::from("dns <host> - resolve hostname via UDP"));
+                out.push(String::from("tcp <ip> <port> - test TCP 3-way handshake"));
+                out.push(String::from("curl <url> - HTTP/1.0 web client request"));
                 out.push(String::from("acpi - inspect ACPI tables & power config"));
                 out.push(String::from("poweroff - ACPI S5 shutdown computer"));
                 out.push(String::from("reboot - hardware restart computer"));
@@ -530,6 +532,74 @@ impl Terminal {
                         }
                         Err(e) => {
                             out.push(format!("dns error: {e}"));
+                        }
+                    }
+                }
+            }
+            "tcp" => {
+                if rest.is_empty() {
+                    out.push(String::from("usage: tcp <ip> <port> (e.g. tcp 10.0.2.2 80)"));
+                } else {
+                    let (ip_str, port_str) = split_first(rest).unwrap_or((rest, "80"));
+                    let port: u16 = port_str.trim().parse().unwrap_or(80);
+                    let mut ip_parts = [0u8; 4];
+                    let mut count = 0;
+                    for p in ip_str.split('.') {
+                        if count < 4 {
+                            if let Ok(val) = p.parse::<u8>() {
+                                ip_parts[count] = val;
+                                count += 1;
+                            }
+                        }
+                    }
+                    if count != 4 {
+                        out.push(format!("invalid IPv4: {ip_str}"));
+                    } else {
+                        out.push(format!(
+                            "connecting to {}.{}.{}.{}:{}...",
+                            ip_parts[0], ip_parts[1], ip_parts[2], ip_parts[3], port
+                        ));
+                        match crate::net::tcp::TcpStream::connect(ip_parts, port) {
+                            Ok(sock) => {
+                                out.push(format!("TCP connected on local port {sock}!"));
+                                crate::net::tcp::TcpStream::close(sock);
+                                out.push(String::from("TCP stream closed cleanly"));
+                            }
+                            Err(e) => {
+                                out.push(format!("TCP connect error: {e}"));
+                            }
+                        }
+                    }
+                }
+            }
+            "curl" | "fetch" => {
+                if rest.is_empty() {
+                    out.push(String::from("usage: curl <url> (e.g. curl http://example.com/ or curl 10.0.2.2:8000)"));
+                } else {
+                    let url = split_first(rest).map_or(rest, |(u, _)| u);
+                    out.push(format!("fetching {url}..."));
+                    match crate::net::http::http_get(url) {
+                        Ok(resp) => {
+                            out.push(format!("HTTP/1.0 {} {}", resp.status_code, resp.status_text));
+                            out.push(format!("Content-Type: {} ({} bytes)", resp.content_type, resp.body.len()));
+                            if let Ok(body_str) = core::str::from_utf8(&resp.body) {
+                                let mut lines_shown = 0;
+                                for line in body_str.lines() {
+                                    if lines_shown >= 6 {
+                                        out.push(format!("... ({} bytes total)", resp.body.len()));
+                                        break;
+                                    }
+                                    if !line.trim().is_empty() {
+                                        out.push(String::from(line));
+                                        lines_shown += 1;
+                                    }
+                                }
+                            } else {
+                                out.push(format!("(binary payload: {} bytes)", resp.body.len()));
+                            }
+                        }
+                        Err(e) => {
+                            out.push(format!("curl error: {e}"));
                         }
                     }
                 }

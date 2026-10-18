@@ -7,6 +7,9 @@
 //! - ICMP Echo Request (ping) and Echo Reply processing
 
 use alloc::vec::Vec;
+pub mod tcp;
+pub mod http;
+
 use spin::Mutex;
 use crate::drivers::e1000::E1000;
 
@@ -17,6 +20,7 @@ pub const ARP_OP_REQUEST: u16 = 1;
 pub const ARP_OP_REPLY: u16 = 2;
 
 pub const IP_PROTO_ICMP: u8 = 1;
+pub const IP_PROTO_TCP: u8 = 6;
 #[allow(dead_code)]
 pub const IP_PROTO_UDP: u8 = 17;
 
@@ -391,6 +395,9 @@ fn handle_ipv4_packet(_src_mac: [u8; 6], payload: &[u8]) {
         }
         IP_PROTO_UDP => {
             handle_udp_packet(src_ip, ip_payload);
+        }
+        IP_PROTO_TCP => {
+            tcp::handle_tcp_packet(src_ip, ip_payload);
         }
         _ => {}
     }
