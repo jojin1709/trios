@@ -1,5 +1,6 @@
-> [!NOTE]
-> **TriOS is an open-source x86_64 operating system written in Rust:** boots under UEFI into an interactive graphical desktop with preemptive multitasking, a window manager, terminal, file explorer, and text editor.
+> [!CAUTION]
+> **STRICT LEGAL & COPYRIGHT WARNING:**
+> **All source code, kernel architecture, designs, documentation, and assets in this repository are strictly copyrighted by JOJIN JOHN ([@jojin1709](https://github.com/jojin1709)).** Copying, cloning, mirroring, redistributing, or using any part of this code or project without explicit prior written permission from the author is **STRICTLY PROHIBITED** and will result in immediate legal action, DMCA takedown notices, and civil/criminal copyright infringement proceedings.
 
 <div align="center">
 
@@ -22,7 +23,8 @@ powershell -ExecutionPolicy Bypass -File .\run-gui.ps1
 [![Rust Nightly](https://img.shields.io/badge/rust-nightly--2024-red.svg)](https://www.rust-lang.org/)
 [![Target x86_64](https://img.shields.io/badge/target-x86__64--unknown--none-blue.svg)](https://doc.rust-lang.org/nightly/rustc/platform-support/x86_64-unknown-none.html)
 [![Bootloader UEFI](https://img.shields.io/badge/bootloader-UEFI--v0.11-green.svg)](https://crates.io/crates/bootloader)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: All Rights Reserved](https://img.shields.io/badge/License-All_Rights_Reserved-red.svg)](LICENSE)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0A66C2?style=flat&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/jojin-john/)
 
 ---
 
@@ -234,26 +236,40 @@ graph TD
 
 ## Roadmap
 
-- [x] **Phase 0**: UEFI Bootloader & image pipeline
-- [x] **Phase 1**: Core kernel (GDT, TSS, IDT, PIC, PIT, Heap, Serial)
-- [x] **Phase 2**: Graphics canvas, font rendering, double buffering
-- [x] **Phase 3**: PS/2 input drivers, event queue, window manager
-- [x] **Phase 4**: In-memory VFS, text inputs, Terminal, Editor, Files Explorer
-- [x] **Phase 5**: Kernel threads, context switching & round-robin scheduler
+- [x] **Phase 0**: UEFI Bootloader & raw image packaging pipeline
+- [x] **Phase 1**: Core kernel fundamentals (GDT, TSS, IDT, PIC, PIT, Heap, COM1 Serial)
+- [x] **Phase 2**: Graphics canvas, font rendering, double-buffered framebuffers
+- [x] **Phase 3**: PS/2 keyboard & mouse input drivers, window manager & composited GUI
+- [x] **Phase 4**: In-memory virtual filesystem (ramfs), Terminal, Text Editor, Files Explorer
+- [x] **Phase 5**: Kernel threads, context switching & round-robin preemptive scheduler
 - [x] **Phase 6**: Ring 3 User Descriptors, TSS RSP0 switching, fast `syscall`/`sysret` MSRs & dispatcher
 - [x] **Phase 7**: PCI bus enumeration & AHCI SATA block storage driver
 - [x] **Phase 8**: Standalone ELF64 executable loader & live execution via terminal (`elfinfo`, `elfrun`)
-- [ ] **Phase 9**: Persistent FAT32 filesystem & disk partition mounting
+- [x] **Phase 9**: Persistent FAT32 / FAT16 / FAT12 filesystem & GPT partition mounting
+- [x] **Phase 10**: CMOS Real-Time Clock (RTC) date/time hardware decoder
+- [x] **Phase 11**: UDP protocol stack & RFC 1035 bare-metal DNS client resolver
+- [x] **Phase 12**: ACPI table discovery (RSDP, XSDT, FADT, MADT, DSDT) & hardware power management (`poweroff`, `reboot`)
+- [x] **Phase 13**: Full RFC 793 TCP protocol stack (SYN/ACK 3-way handshake) & bare-metal HTTP/1.0 client (`curl`)
+- [x] **Phase 14**: Interactive GUI Web Browser application (`Ctrl+4`)
+- [x] **Phase 15**: Real-time System Monitor & Task Manager with live CPU, memory gauges, thread table (`Ctrl+5`)
 
 ---
 
-## Developer
+## Developer & Contact
 
-**TriOS** is created and actively developed by **JOJIN JOHN** ([@jojin1709](https://github.com/jojin1709)).
+**TriOS** is designed, created, and actively developed by **[JOJIN JOHN](https://github.com/jojin1709)**.
+
+- **LinkedIn**: [linkedin.com/in/jojin-john](https://www.linkedin.com/in/jojin-john/)
+- **GitHub**: [@jojin1709](https://github.com/jojin1709)
 
 ---
 
-## License
+## License & Legal Notice
 
-This project is licensed under the [MIT License](LICENSE).
-**Copyright (c) 2026 JOJIN JOHN**
+**Copyright (c) 2026 JOJIN JOHN. All Rights Reserved.**
+
+> [!CAUTION]
+> **LEGAL WARNING:**
+> No part of this software, including source code, architecture, design, documentation, or assets, may be copied, reproduced, cloned, mirrored, modified, published, distributed, or used in any form without the express prior written permission of **JOJIN JOHN**.
+> 
+> Unauthorized copying, scraping, plagiarism, or distribution constitutes willful copyright infringement and will be met with immediate legal prosecution and DMCA enforcement. See [LICENSE](LICENSE) for full details.
