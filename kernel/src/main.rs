@@ -167,6 +167,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         heap.phys_start.as_u64(),
         allocator::remaining()
     );
+
+    // Phase 20: Initialize the bitmap physical frame allocator over usable RAM
+    memory::init_frame_allocator(&boot_info.memory_regions, heap.phys_start, heap.size);
+    let fstats = memory::stats();
+    serial_println!(
+        "[memory ] bitmap frame allocator ready: {} total frames ({:.1} MiB) | {} allocated | {} free",
+        fstats.total,
+        fstats.total as f64 * 4.0 / 1024.0,
+        fstats.allocated,
+        fstats.free
+    );
     memory::log_page_table(phys_offset);
 
     // Allocation smoke test through the global allocator: Box (heap),
@@ -308,6 +319,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             info.byte_len / 1024
         );
         let gfx = graphics::Graphics::new(fb);
+        panic::init_panic_screen(
+            gfx.hw_buffer_ptr(),
+            info.width,
+            info.height,
+            info.stride,
+            info.pixel_format,
+        );
         serial_println!(
             "[gfx    ] backbuffer {} KiB on heap | {} heap bytes free",
             info.byte_len / 1024,

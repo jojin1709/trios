@@ -197,21 +197,24 @@ impl SysMon {
         wm.set_label(self.win, SM_CPU, cpu_str);
 
         // 2. Memory Telemetry
+        let fstats = memory::stats();
         let heap_free = allocator::remaining();
         let heap_total = allocator::HEAP_SIZE as usize;
         let heap_used = heap_total.saturating_sub(heap_free);
         let heap_used_kib = heap_used / 1024;
         let heap_total_kib = heap_total / 1024;
-        let heap_pct = (heap_used as f32 / heap_total as f32).clamp(0.0, 1.0);
-
-        let ram_info = if let Some(summary) = memory::get_summary() {
-            let usable_mib = summary.usable_bytes / (1024 * 1024);
-            format!("RAM: {usable_mib} MiB usable | Heap: {heap_used_kib} / {heap_total_kib} KiB ({:.0}%)", heap_pct * 100.0)
+        let frame_pct = if fstats.total > 0 {
+            (fstats.allocated as f32 / fstats.total as f32).clamp(0.0, 1.0)
         } else {
-            format!("RAM: 256 MiB installed | Heap: {heap_used_kib} / {heap_total_kib} KiB")
+            0.0
         };
+
+        let ram_info = format!(
+            "Frames: {} used / {} free ({} total) | Heap: {} / {} KiB",
+            fstats.allocated, fstats.free, fstats.total, heap_used_kib, heap_total_kib
+        );
         wm.set_label(self.win, SM_MEM, ram_info);
-        wm.set_progress(self.win, SM_MEM_BAR, heap_pct);
+        wm.set_progress(self.win, SM_MEM_BAR, frame_pct);
 
         // 3. Telemetry (Compositor & Network)
         let perf_snap = perf::get_latest();

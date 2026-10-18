@@ -229,6 +229,7 @@ impl Terminal {
                 out.push(String::from("echo <text> - print text"));
                 out.push(String::from("clear - clear scrollback"));
                 out.push(String::from("mem - free heap bytes"));
+                out.push(String::from("meminfo - physical frames & slab memory stats"));
                 out.push(String::from("uptime - seconds since boot"));
                 out.push(String::from("elfinfo <path> - inspect ELF executable"));
                 out.push(String::from("elfrun <path> - load and execute ELF binary"));
@@ -316,6 +317,54 @@ impl Terminal {
                 "heap free: {} bytes",
                 crate::allocator::remaining()
             )),
+            "meminfo" => {
+                let stats = crate::memory::stats();
+                let summary = crate::memory::get_summary();
+                let heap_free = crate::allocator::remaining();
+                let heap_total = crate::allocator::HEAP_SIZE as usize;
+                let heap_used = heap_total.saturating_sub(heap_free);
+
+                out.push(String::from("=== TriOS Memory Telemetry ==="));
+                out.push(format!(
+                    "Physical: {} total | {} used | {} free",
+                    stats.total, stats.allocated, stats.free
+                ));
+                let pct = if stats.total > 0 {
+                    (stats.allocated as f64 / stats.total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                let total_mib = stats.total as f64 * 4.0 / 1024.0;
+                let used_mib = stats.allocated as f64 * 4.0 / 1024.0;
+                out.push(format!("RAM: {:.1} / {:.1} MiB ({:.1}% allocated)", used_mib, total_mib, pct));
+
+                out.push(format!(
+                    "Heap: {} KiB ({} KiB used, {} KiB free)",
+                    heap_total / 1024,
+                    heap_used / 1024,
+                    heap_free / 1024
+                ));
+                let slab_info = crate::allocator::slab_stats();
+                out.push(format!(
+                    "Slabs: 32B:{} 64B:{} 128B:{} 256B:{} 512B:{} 1K:{} 2K:{}",
+                    slab_info[0].active,
+                    slab_info[1].active,
+                    slab_info[2].active,
+                    slab_info[3].active,
+                    slab_info[4].active,
+                    slab_info[5].active,
+                    slab_info[6].active,
+                ));
+
+                if let Some(s) = summary {
+                    out.push(format!(
+                        "UEFI: {} regions | {:.1} MiB usable | top {:#x}",
+                        s.region_count,
+                        s.usable_bytes as f64 / (1024.0 * 1024.0),
+                        s.top_of_ram
+                    ));
+                }
+            }
             "uptime" => out.push(format!("uptime: {} s", crate::timer::uptime_seconds())),
             "elfinfo" => {
                 if rest.is_empty() {

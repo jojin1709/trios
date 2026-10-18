@@ -112,6 +112,11 @@ impl Graphics {
         self.height
     }
 
+    /// Returns raw hardware scanout buffer address for emergency panic screen rendering.
+    pub fn hw_buffer_ptr(&self) -> usize {
+        self.hw.as_ptr() as usize
+    }
+
     /// A copy of the bootloader's layout description (logged at init).
     // Phase 3 seam: the compositor will query geometry through this instead
     // of threading `FrameBufferInfo` around. Unused until then.

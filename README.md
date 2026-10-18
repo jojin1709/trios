@@ -85,11 +85,19 @@ TriOS has completed **Phase 0 through Phase 19**:
 | **Phase 17** | Display + Visual Foundation | **Done** | Native 1080p GOP resolution, futuristic glass theme (`gui/theme.rs`), cached vertical gradient wallpaper with dot grid & faint emblem, floating centered dock, 32px titlebars with 10px rounded corners & drop shadows, floating toast, and 32 MiB heap |
 | **Phase 18** | Desktop Experience | **Done** | Procedural vector icons (`gui/icons.rs`), Start Menu with app search & ACPI power popup, Quick Settings tray with Night Light filter & sliders, desktop icon selection & double-click, reusable Context Menu, top-right Toast notification system, Alt+Tab switcher & Super key |
 | **Phase 19** | Typography & System Apps | **Done** | Fontdue TTF vector typography (`Inter` & `JetBrains Mono`), Settings App (`Ctrl+7`), Boot splash animation, Lock Screen (`Ctrl+L`), app polish |
+| **Phase 20** | Memory Management | **Done** | Bitmap physical frame allocator, themed page-fault screen, thread stack guard pages, kernel virtual memory API (`map_page`/`unmap_page`/`alloc_pages`/`free_pages`), hybrid slab/size-class heap allocator (32B..2048B), `meminfo` shell command & SysMon physical frame gauges |
 
 ---
 
 ## Key Features
 
+- **Memory Management Subsystem & Slab Allocator (Phase 20)**: Complete physical and virtual memory overhaul:
+  - **Bitmap Frame Allocator**: O(1) bit-indexed physical frame manager covering up to 4 GiB of RAM, initialized directly from the UEFI memory map (`BootInfo::memory_regions`), tracking total, allocated, and free frames.
+  - **Kernel Virtual Memory API**: Safe primitives `map_page`, `unmap_page`, `alloc_pages`, and `free_pages` with granular architecture-neutral permission flags (`PageFlags`: `KERNEL_DATA`, `KERNEL_RO`, `KERNEL_CODE`, `USER_DATA`, `USER_CODE`).
+  - **Thread Stack Guard Pages**: Thread stacks allocated with an unmapped 4 KiB guard page at the bottom (`STACK_SLOT_PAGES`), guaranteeing immediate `#PF` interception upon stack overflow. Automatic RAII deallocation cleans up frames on thread exit.
+  - **Themed Page Fault Diagnostics Screen**: Low-level exception vector 14 handler printing CR2, error code, RIP, and RSP to serial and rendering an emergency themed panic card with crash diagnostics directly to the hardware scanout framebuffer without heap dependencies.
+  - **Hybrid Size-Class Slab Allocator**: 7 power-of-two slab caches (32B, 64B, 128B, 256B, 512B, 1024B, 2048B) backed by `LockedHeap`, offering instantaneous small object allocation while preventing heap fragmentation.
+  - **Telemetry & Gauges**: Terminal `meminfo` command displaying physical RAM usage, slab allocation stats, and UEFI region summary; System Monitor (`Ctrl+5`) gauges updated with real-time physical frame counts.
 - **TTF Vector Typography Engine (Phase 19)**: Replaced the primitive 8x8 bitmap font with authentic TrueType vector rendering powered by `fontdue` in `#![no_std]`. Embeds `Inter-Regular.ttf` for UI text and `JetBrainsMono-Regular.ttf` for code/terminals with sub-pixel rasterization, pre-cached ASCII glyphs, and direct framebuffer alpha blending.
 - **Settings App & Live Theme Customizer (Phase 19)**: Modern 6-tab system preferences control center (`Ctrl+7`): Display (GOP resolution & linear framebuffer), Personalization (live accent color swatches: Cyan, Violet, Green, Orange, Pink; procedural wallpapers; glass transparency toggle), Network (Intel e1000 telemetry & IP configuration), Sound (HDA volume control), Date & Time (hardware CMOS RTC clock & IST timezone), and About (hardware specs & **JOJIN JOHN** credits).
 - **Boot Splash & Lock Screen (Phase 19)**: Animated boot splash screen with glowing TriOS triad procedural emblem and smooth progress bar; lock screen (`Ctrl+L` or Start Menu) featuring frosted glassmorphism card, user avatar, live CMOS clock, administrator credentials, and session unlock.

@@ -22,6 +22,20 @@ use x86_64::{
 };
 use spin::Mutex;
 
+pub mod bitmap;
+pub mod virt;
+
+#[allow(unused_imports)]
+pub use bitmap::{
+    BitmapFrameAllocator, FrameStats, alloc_contiguous, alloc_frame, free_contiguous, free_frame,
+    init as init_frame_allocator, stats,
+};
+#[allow(unused_imports)]
+pub use virt::{
+    KernelStack, PageFlags, alloc_kernel_stack, alloc_pages, free_kernel_stack, free_pages,
+    is_guard_page, map_page, unmap_page,
+};
+
 /// x86 page size (4 KiB) — the only frame size Phase 1 allocates.
 pub const PAGE_SIZE: u64 = 4096;
 
@@ -213,6 +227,11 @@ static PHYS_OFFSET: spin::Mutex<Option<VirtAddr>> = spin::Mutex::new(None);
 /// Saves physical memory offset for future page-table operations.
 pub fn init_memory(physical_memory_offset: VirtAddr) {
     *PHYS_OFFSET.lock() = Some(physical_memory_offset);
+}
+
+/// Returns the saved physical memory offset.
+pub fn get_phys_offset() -> Option<VirtAddr> {
+    *PHYS_OFFSET.lock()
 }
 
 /// Clears the `NO_EXECUTE` permission bit for all page-table entries covering

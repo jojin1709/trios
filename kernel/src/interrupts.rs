@@ -237,10 +237,27 @@ extern "x86-interrupt" fn page_fault_handler(
     // `read_raw` (safe) never fails, unlike `Cr2::read`, which rejects
     // non-canonical values — exactly what a wild pointer can produce.
     let cr2 = Cr2::read_raw();
-    serial_println!(
-        "[irq    ] EXCEPTION: page fault — cr2 = {cr2:#x}, error = {error_code:?}\n{stack_frame:#?}"
-    );
-    panic!("unhandled page fault at address {cr2:#x}");
+    let rip = stack_frame.instruction_pointer.as_u64();
+    let rsp = stack_frame.stack_pointer.as_u64();
+    let err_bits = error_code.bits();
+
+    serial_println!();
+    serial_println!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    serial_println!("!!!             KERNEL PAGE FAULT (#PF)              !!!");
+    serial_println!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    serial_println!("[pf] Faulting Virtual Address (CR2): {cr2:#018x}");
+    serial_println!("[pf] Error Code:                     {err_bits:#010x} ({error_code:?})");
+    serial_println!("[pf] Instruction Pointer (RIP):      {rip:#018x}");
+    serial_println!("[pf] Stack Pointer (RSP):            {rsp:#018x}");
+
+    let is_guard = crate::memory::is_guard_page(cr2);
+    let reason = if is_guard {
+        "PAGE FAULT: STACK OVERFLOW (GUARD PAGE)"
+    } else {
+        "PAGE FAULT: MEMORY PROTECTION VIOLATION"
+    };
+
+    crate::panic::show_panic_screen(reason, cr2, err_bits, rip, rsp);
 }
 
 extern "x86-interrupt" fn general_protection_fault_handler(
