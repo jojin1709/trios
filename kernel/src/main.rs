@@ -100,6 +100,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     });
     serial_println!("[boot   ] direct map of physical memory at {phys_offset:#x}");
     memory::init_memory(phys_offset);
+    sched::init_kernel_pml4(x86_64::registers::control::Cr3::read().0);
 
     // Phase 12: ACPI Table Discovery & Power Management Subsystem
     let rsdp_opt = match boot_info.rsdp_addr {
@@ -472,6 +473,7 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
     // built next cycle reach it through the event loop (`apps` below),
     // which mutates it (New file, editor Save, `write` at the prompt).
     let mut ramfs = fs::FileSystem::new();
+    fs::init_fs(ramfs.clone());
     serial_println!("[fs     ] ramfs ready: {} files", ramfs.file_count());
 
     // -- demo window 1: Welcome (also the initial focus) ------------------

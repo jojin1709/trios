@@ -250,6 +250,30 @@ extern "x86-interrupt" fn page_fault_handler(
     serial_println!("[pf] Instruction Pointer (RIP):      {rip:#018x}");
     serial_println!("[pf] Stack Pointer (RSP):            {rsp:#018x}");
 
+    // Check if fault occurred in User Mode (Ring 3)
+    let is_user_mode = error_code.contains(PageFaultErrorCode::USER_MODE)
+        || cr2 < 0x0000_8000_0000_0000;
+    let pid = crate::sched::current_pid();
+
+    if is_user_mode && pid != 0 {
+        serial_println!();
+        serial_println!("========================================================");
+        serial_println!("!!!           USER PROCESS FAULT ISOLATION           !!!");
+        serial_println!("========================================================");
+        serial_println!("[pf] User mode page fault in PID #{pid}");
+        serial_println!("[pf] Faulting Virtual Address (CR2): {cr2:#018x}");
+        serial_println!("[pf] Error Code:                     {err_bits:#010x} ({error_code:?})");
+        serial_println!("[pf] Instruction Pointer (RIP):      {rip:#018x}");
+        serial_println!("[pf] Stack Pointer (RSP):            {rsp:#018x}");
+        serial_println!("[pf] Action: Cleanly terminating process #{pid} without harming kernel.");
+
+        crate::sched::restore_kernel_pml4();
+        crate::sched::kill_process(pid);
+        crate::sched::set_current_pid(0);
+        x86_64::instructions::interrupts::enable();
+        crate::sched::thread_exit();
+    }
+
     let is_guard = crate::memory::is_guard_page(cr2);
     let reason = if is_guard {
         "PAGE FAULT: STACK OVERFLOW (GUARD PAGE)"

@@ -12,6 +12,15 @@ const IA32_STAR: u32 = 0xC000_0081;
 const IA32_LSTAR: u32 = 0xC000_0082;
 const IA32_FMASK: u32 = 0xC000_0084;
 
+#[unsafe(no_mangle)]
+static mut USER_RSP_SCRATCH: u64 = 0;
+
+const KERNEL_SYSCALL_STACK_SIZE: usize = 16384;
+static mut KERNEL_SYSCALL_STACK: [u8; KERNEL_SYSCALL_STACK_SIZE] = [0; KERNEL_SYSCALL_STACK_SIZE];
+
+#[unsafe(no_mangle)]
+static mut KERNEL_SYSCALL_RSP: u64 = 0;
+
 /// Low-level naked assembly entry point for the `syscall` instruction.
 ///
 /// Hardware behavior on `syscall`:
@@ -21,12 +30,20 @@ const IA32_FMASK: u32 = 0xC000_0084;
 ///   * CS and SS are loaded from IA32_STAR.
 ///   * RIP is loaded from IA32_LSTAR (jumps directly here).
 ///
-/// On entry, RSP still points to the caller's stack. We must preserve registers,
-/// call `syscall_dispatch`, and restore registers before `sysretq`.
+/// On entry, we save caller's user RSP to `USER_RSP_SCRATCH` and switch
+/// to the dedicated kernel syscall stack `KERNEL_SYSCALL_RSP`.
+/// We preserve user registers, call `syscall_dispatch`, restore registers and user stack,
+/// and return to Ring 3 via `sysretq`.
 #[unsafe(naked)]
 pub unsafe extern "C" fn syscall_entry() {
     naked_asm!(
-        // Save caller's user stack and registers
+        // Save caller's user stack pointer
+        "mov [rip + {user_rsp_scratch}], rsp",
+
+        // Switch to dedicated kernel syscall stack
+        "mov rsp, [rip + {kernel_rsp}]",
+
+        // Save registers on kernel stack
         "push rcx", // User RIP
         "push r11", // User RFLAGS
         "push rbp",
@@ -59,32 +76,36 @@ pub unsafe extern "C" fn syscall_entry() {
         "pop r11", // User RFLAGS
         "pop rcx", // User RIP
 
-        // Restore user RFLAGS
-        "push r11",
-        "popfq",
+        // Restore user stack pointer
+        "mov rsp, [rip + {user_rsp_scratch}]",
 
-        // Return to caller via return address saved in rcx
-        "jmp rcx",
+        // Fast transition back to Ring 3 userspace
+        "sysretq",
+
+        user_rsp_scratch = sym USER_RSP_SCRATCH,
+        kernel_rsp = sym KERNEL_SYSCALL_RSP,
         dispatch = sym syscall_dispatch
     );
 }
 
 /// Initializes the CPU Model-Specific Registers (MSRs) to enable fast syscalls.
 pub fn init() {
-    let selectors = crate::gdt::selectors();
-
     unsafe {
+        // Initialize kernel syscall stack top
+        KERNEL_SYSCALL_RSP = core::ptr::addr_of!(KERNEL_SYSCALL_STACK) as u64 + KERNEL_SYSCALL_STACK_SIZE as u64;
+
         // 1. Enable SCE (System Call Enable) bit in EFER MSR
         let mut efer = Efer::read();
         efer.insert(EferFlags::SYSTEM_CALL_EXTENSIONS);
         Efer::write(efer);
 
         // 2. Program IA32_STAR MSR:
-        // Bits 32..47: Kernel CS/SS base selector (used by syscall)
-        // Bits 48..63: User CS/SS base selector (used by sysret)
-        let kernel_cs = selectors.kernel_code.0 as u64;
-        let user_cs = (selectors.user_data.0 as u64) | 3;
-        let star_val = (user_cs << 48) | (kernel_cs << 32);
+        // Bits 32..47: Kernel CS/SS base selector (used by syscall) -> 0x0008
+        // Bits 48..63: User base selector (used by sysret) -> 0x0010
+        // When sysretq executes:
+        //   CS is loaded with (STAR[63:48] + 16) | 3 = (0x10 + 0x10) | 3 = 0x20 | 3 = 0x23 (user_code)
+        //   SS is loaded with (STAR[63:48] + 8) | 3 = (0x10 + 0x08) | 3 = 0x18 | 3 = 0x1B (user_data)
+        let star_val = (0x0010u64 << 48) | (0x0008u64 << 32);
         Msr::new(IA32_STAR).write(star_val);
 
         // 3. Program IA32_LSTAR with the address of `syscall_entry`
@@ -92,26 +113,13 @@ pub fn init() {
         Msr::new(IA32_LSTAR).write(lstar_val);
 
         // 4. Program IA32_FMASK: Mask Interrupt Flag (0x200) on syscall entry
-        // This ensures interrupts are disabled during the initial register/stack swap
         Msr::new(IA32_FMASK).write(0x200);
     }
 
     serial_println!("[syscall] IA32_EFER / STAR / LSTAR / FMASK programmed (fast syscalls ready)");
 }
 
-/// Helper function to invoke a syscall from Rust (used for kernel-space userland testing).
+/// Helper function to invoke a syscall from Rust (direct dispatch for kernel threads).
 pub fn syscall(num: usize, arg1: usize, arg2: usize, arg3: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            inlateout("rax") num => ret,
-            in("rdi") arg1,
-            in("rsi") arg2,
-            in("rdx") arg3,
-            out("rcx") _, // clobbered by CPU (saves RIP)
-            out("r11") _, // clobbered by CPU (saves RFLAGS)
-        );
-    }
-    ret
+    table::syscall_dispatch(num, arg1, arg2, arg3)
 }

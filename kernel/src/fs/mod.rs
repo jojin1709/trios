@@ -74,6 +74,7 @@ struct Node {
 
 /// The in-memory filesystem. Create with [`FileSystem::new`] — the
 /// desktop owns the instance (see `main.rs::desktop_run`).
+#[derive(Debug, Clone)]
 pub struct FileSystem {
     /// Flat node list; see module docs for why not a map.
     nodes: Vec<Node>,
@@ -147,6 +148,7 @@ impl FileSystem {
             "- File Explorer\n- Text Editor\n- Terminal\n- [x] in-memory VFS\n- [x] ELF64 Loader",
         );
         fs.write_bytes("/bin/hello.elf", &crate::fs::elf::create_sample_elf());
+        fs.write_bytes("/bin/fault.elf", &crate::fs::elf::create_fault_elf());
         fs
     }
 
@@ -269,4 +271,32 @@ impl Default for FileSystem {
     fn default() -> Self {
         Self { nodes: Vec::new() }
     }
+}
+
+pub static GLOBAL_FS: spin::Mutex<Option<FileSystem>> = spin::Mutex::new(None);
+
+/// Initializes the shared global filesystem for system calls and kernel apps.
+pub fn init_fs(fs: FileSystem) {
+    *GLOBAL_FS.lock() = Some(fs);
+}
+
+/// Reads file bytes from the shared global filesystem.
+pub fn read_bytes(path: &str) -> Option<Vec<u8>> {
+    GLOBAL_FS
+        .lock()
+        .as_ref()
+        .and_then(|fs| fs.read_bytes(path).map(|b| b.to_vec()))
+}
+
+/// Writes file bytes to the shared global filesystem.
+pub fn write_bytes(path: &str, data: &[u8]) -> bool {
+    GLOBAL_FS
+        .lock()
+        .as_mut()
+        .map_or(false, |fs| fs.write_bytes(path, data))
+}
+
+/// Checks if a path exists in the shared global filesystem.
+pub fn exists(path: &str) -> bool {
+    GLOBAL_FS.lock().as_ref().map_or(false, |fs| fs.exists(path))
 }

@@ -9,9 +9,15 @@ use spin::Mutex;
 use x86_64::instructions::interrupts;
 
 pub mod context;
+pub mod process;
 pub mod thread;
 
 use context::switch_context;
+#[allow(unused_imports)]
+pub use process::{
+    Process, ProcessId, ProcessState, current_pid, init_kernel_pml4, kill_process,
+    restore_kernel_pml4, set_current_pid,
+};
 pub use thread::{Thread, ThreadId, ThreadState};
 
 /// The global scheduler instance.
@@ -99,6 +105,7 @@ pub fn spawn(name: &str, entry: extern "C" fn()) -> ThreadId {
 }
 
 /// Spawns a new thread executing a loaded ELF binary with a backing image buffer.
+#[allow(dead_code)]
 pub fn spawn_elf(name: &str, entry_addr: usize, image: Vec<u8>) -> ThreadId {
     interrupts::without_interrupts(|| {
         let mut lock = SCHEDULER.lock();

@@ -69,6 +69,7 @@ impl Thread {
     }
 
     /// Spawns a thread for a loaded ELF executable, keeping its backing image buffer alive.
+    #[allow(dead_code)]
     pub fn new_with_image(name: &str, entry_addr: usize, image: Vec<u8>) -> Box<Self> {
         Self::new_raw(name, entry_addr, Some(image))
     }

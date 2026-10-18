@@ -256,3 +256,120 @@ pub fn create_sample_elf() -> Vec<u8> {
 
     elf
 }
+
+/// Generates a valid minimal 64-bit ELF executable that performs a null pointer dereference
+/// to test Ring 3 user exception isolation.
+pub fn create_fault_elf() -> Vec<u8> {
+    // x86_64 instructions:
+    // mov rax, 0
+    // mov rdi, [rax]       (48 8b 38) -> null dereference at 0x0
+    // mov rax, 0           (SYS_EXIT)
+    // syscall
+    // ret
+    let mut code: Vec<u8> = Vec::new();
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00]); // mov rax, 0
+    code.extend_from_slice(&[0x48, 0x8B, 0x38]);                          // mov rdi, [rax] (CRASH)
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00]); // mov rax, 0
+    code.extend_from_slice(&[0x0F, 0x05]);                                 // syscall
+    code.push(0xC3);
+
+    let total_size = 120 + code.len() as u64;
+    let mut elf = vec![0u8; total_size as usize];
+
+    elf[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+    elf[4] = 2; // ELFCLASS64
+    elf[5] = 1; // ELFDATA2LSB
+    elf[6] = 1; // EV_CURRENT
+    elf[7] = 0; // ELFOSABI_NONE
+    elf[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+    elf[18..20].copy_from_slice(&0x3Eu16.to_le_bytes()); // EM_X86_64
+    elf[20..24].copy_from_slice(&1u32.to_le_bytes());
+    elf[24..32].copy_from_slice(&(0x400000u64 + 120).to_le_bytes());
+    elf[32..40].copy_from_slice(&64u64.to_le_bytes());
+    elf[48..52].copy_from_slice(&0u32.to_le_bytes());
+    elf[52..54].copy_from_slice(&64u16.to_le_bytes());
+    elf[54..56].copy_from_slice(&56u16.to_le_bytes());
+    elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+
+    let ph = &mut elf[64..120];
+    ph[0..4].copy_from_slice(&PT_LOAD.to_le_bytes());
+    ph[4..8].copy_from_slice(&7u32.to_le_bytes());
+    ph[8..16].copy_from_slice(&0u64.to_le_bytes());
+    ph[16..24].copy_from_slice(&0x400000u64.to_le_bytes());
+    ph[24..32].copy_from_slice(&0x400000u64.to_le_bytes());
+    ph[32..40].copy_from_slice(&total_size.to_le_bytes());
+    ph[40..48].copy_from_slice(&total_size.to_le_bytes());
+    ph[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
+
+    elf[120..].copy_from_slice(&code);
+    elf
+}
+
+/// Loads ELF segments into an isolated user process's PML4 address space.
+pub fn load_elf_into_process(
+    bytes: &[u8],
+    proc: &mut crate::sched::Process,
+) -> Result<u64, ElfError> {
+    let hdr = parse_header(bytes)?;
+    let phys_offset = crate::memory::get_phys_offset().ok_or(ElfError::NoLoadableSegments)?;
+
+    for i in 0..hdr.ph_num {
+        if let Some(ph) = parse_program_header(bytes, &hdr, i) {
+            if ph.p_type == PT_LOAD && ph.p_memsz > 0 {
+                let start_v = ph.p_vaddr & !0xFFF;
+                let end_v = (ph.p_vaddr + ph.p_memsz + 0xFFF) & !0xFFF;
+                let page_count = ((end_v - start_v) / 4096) as usize;
+
+                for page_idx in 0..page_count {
+                    let page_virt = x86_64::VirtAddr::new(start_v + (page_idx as u64 * 4096));
+                    let frame = crate::memory::bitmap::alloc_frame()
+                        .ok_or(ElfError::NoLoadableSegments)?;
+
+                    crate::sched::process::map_in_pml4(
+                        proc.pml4_frame,
+                        page_virt,
+                        frame,
+                        crate::memory::virt::PageFlags::USER_CODE,
+                    )
+                    .map_err(|_| ElfError::NoLoadableSegments)?;
+
+                    proc.allocated_frames.push(frame);
+
+                    // Zero frame first
+                    unsafe {
+                        let frame_ptr = (phys_offset + frame.start_address().as_u64())
+                            .as_mut_ptr::<u8>();
+                        core::ptr::write_bytes(frame_ptr, 0, 4096);
+
+                        // Copy segment data intersecting this 4 KiB page
+                        let page_start = page_virt.as_u64();
+                        let page_end = page_start + 4096;
+
+                        let seg_start = ph.p_vaddr;
+                        let seg_data_end = ph.p_vaddr + ph.p_filesz;
+
+                        let copy_start = seg_start.max(page_start);
+                        let copy_end = seg_data_end.min(page_end);
+
+                        if copy_start < copy_end {
+                            let file_offset = (ph.p_offset + (copy_start - seg_start)) as usize;
+                            let frame_offset = (copy_start - page_start) as usize;
+                            let len = (copy_end - copy_start) as usize;
+
+                            if file_offset + len <= bytes.len() {
+                                let src = &bytes[file_offset..file_offset + len];
+                                core::ptr::copy_nonoverlapping(
+                                    src.as_ptr(),
+                                    frame_ptr.add(frame_offset),
+                                    len,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(hdr.entry_point)
+}

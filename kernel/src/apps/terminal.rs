@@ -233,6 +233,8 @@ impl Terminal {
                 out.push(String::from("uptime - seconds since boot"));
                 out.push(String::from("elfinfo <path> - inspect ELF executable"));
                 out.push(String::from("elfrun <path> - load and execute ELF binary"));
+                out.push(String::from("ps - list running processes & threads"));
+                out.push(String::from("kill <pid> - terminate user process"));
                 out.push(String::from("disks - list SATA storage controllers"));
                 out.push(String::from("gpt - list GPT partitions on disk"));
                 out.push(String::from("fatls [dir] - list FAT volume directory"));
@@ -401,19 +403,60 @@ impl Terminal {
                     match fs.read_bytes(path) {
                         None => out.push(format!("file not found: {path}")),
                         Some(bytes) => {
-                            match crate::fs::elf::load_executable(bytes) {
-                                Ok(loaded) => {
-                                    let entry = loaded.entry_point;
-                                    let tid = crate::sched::spawn_elf(
-                                        path,
-                                        entry,
-                                        loaded.image,
-                                    );
-                                    out.push(format!("spawned ELF thread #{tid} (entry={entry:#x})"));
+                            match crate::sched::process::spawn_process(path, bytes) {
+                                Ok((pid, tid)) => {
+                                    out.push(format!(
+                                        "spawned Ring 3 process #{pid} (TID #{tid}) from '{path}'"
+                                    ));
                                 }
-                                Err(err) => out.push(format!("ELF load error: {err:?}")),
+                                Err(err) => out.push(format!("process spawn error: {err}")),
                             }
                         }
+                    }
+                }
+            }
+            "ps" => {
+                out.push(String::from("  PID  NAME                 STATE        MEMORY   TYPE"));
+                out.push(String::from("  ---  ------------------   ---------    ------   ------"));
+
+                // 1. Kernel threads
+                let threads = crate::sched::thread_snapshot();
+                for t in &threads {
+                    out.push(format!(
+                        "  {:<4} {:<20} {:<12} 32 KiB   KERNEL",
+                        t.id, t.name, t.state_str
+                    ));
+                }
+
+                // 2. User processes
+                let ptable = crate::sched::process::PROCESS_TABLE.lock();
+                for p in ptable.iter() {
+                    let state_str = match p.state {
+                        crate::sched::ProcessState::Ready => "READY",
+                        crate::sched::ProcessState::Running => "RUNNING",
+                        crate::sched::ProcessState::Sleeping(_) => "SLEEPING",
+                        crate::sched::ProcessState::Dead => "DEAD",
+                    };
+                    let mem_kib = (p.allocated_frames.len() * 4) as usize;
+                    out.push(format!(
+                        "  {:<4} {:<20} {:<12} {} KiB   USER",
+                        p.pid, p.name, state_str, mem_kib
+                    ));
+                }
+            }
+            "kill" => {
+                if rest.is_empty() {
+                    out.push(String::from("usage: kill <pid>"));
+                } else {
+                    let pid_str = split_first(rest).map_or(rest, |(p, _)| p);
+                    if let Ok(pid) = pid_str.parse::<u64>() {
+                        if crate::sched::process::kill_process(pid) {
+                            out.push(format!("process #{pid} killed"));
+                        } else {
+                            out.push(format!("process #{pid} not found"));
+                        }
+                    } else {
+                        out.push(format!("invalid pid: {pid_str}"));
                     }
                 }
             }

@@ -86,11 +86,20 @@ TriOS has completed **Phase 0 through Phase 19**:
 | **Phase 18** | Desktop Experience | **Done** | Procedural vector icons (`gui/icons.rs`), Start Menu with app search & ACPI power popup, Quick Settings tray with Night Light filter & sliders, desktop icon selection & double-click, reusable Context Menu, top-right Toast notification system, Alt+Tab switcher & Super key |
 | **Phase 19** | Typography & System Apps | **Done** | Fontdue TTF vector typography (`Inter` & `JetBrains Mono`), Settings App (`Ctrl+7`), Boot splash animation, Lock Screen (`Ctrl+L`), app polish |
 | **Phase 20** | Memory Management | **Done** | Bitmap physical frame allocator, themed page-fault screen, thread stack guard pages, kernel virtual memory API (`map_page`/`unmap_page`/`alloc_pages`/`free_pages`), hybrid slab/size-class heap allocator (32B..2048B), `meminfo` shell command & SysMon physical frame gauges |
+| **Phase 21** | Real Processes & Ring 3 | **Done** | Per-process PML4 page tables (shared kernel half, isolated user half), Ring 3 execution via `iretq`/`sysretq`, full syscall suite (`exit`, `write`, `read`, `yield`, `uptime`, `getpid`, `sleep_ms`, `mmap`, `munmap`, `open`, `close`), strict user pointer validation, process table & teardown, user fault isolation, `ps` & `kill` commands |
 
 ---
 
 ## Key Features
 
+- **Real Processes & Ring 3 Userspace (Phase 21)**: True user/kernel separation and fault isolation:
+  - **Per-Process PML4 Address Spaces**: Each process is given an isolated 4-level x86_64 page table. The upper kernel half (entries 1..511) is cloned from boot CR3 to preserve kernel image, direct physical map, stack, and hardware drivers; entry 0 (0..512 GiB) is strictly isolated and private to the user process.
+  - **Ring 3 CPU Transition**: Clean transition from CPL 0 to CPL 3 using `iretq` with user data selector `0x1B` (RPL 3) and user code selector `0x23` (RPL 3), initializing a dedicated 16 KiB user stack at 2 GiB (`0x0000_0000_7FFF_0000`).
+  - **Fast Syscall Subsystem**: Configures `IA32_STAR`, `IA32_LSTAR`, and `IA32_FMASK` for hardware `syscall`/`sysretq`. Automatically swaps to a dedicated kernel syscall stack (`KERNEL_SYSCALL_RSP`) on entry, preserves callee registers, dispatches the request, and executes `sysretq` back to Ring 3.
+  - **Full Syscall Suite**: Implements `SYS_EXIT` (0), `SYS_WRITE` (1), `SYS_READ` (2), `SYS_YIELD` (3), `SYS_UPTIME` (4), `SYS_GETPID` (5), `SYS_SLEEP_MS` (6), `SYS_MMAP` (7), `SYS_MUNMAP` (8), `SYS_OPEN` (9), and `SYS_CLOSE` (10).
+  - **Strict User Pointer Validation**: Function `validate_user_buffer` checks canonical user range (`< 0x0080_0000_0000`), verifies non-null pointers, walks page table levels (L4 -> L3 -> L2 -> L1) to ensure `PRESENT` and `USER_ACCESSIBLE` flags, and validates `WRITABLE` for buffer destinations.
+  - **User Fault Isolation**: When a Ring 3 process causes an exception (e.g. null pointer dereference in `/bin/fault.elf`), the `#PF` handler intercepts it, logs the faulting address and user RIP, cleanly terminates that process, frees its user physical frames and page tables, restores the baseline kernel PML4, and re-enables interrupts—leaving the kernel, GUI, and desktop applications running smoothly.
+  - **Process Management Tools**: Terminal shell commands `ps` (listing active processes and threads with PID, TID, state, and frame count) and `kill <pid>` (terminating user processes).
 - **Memory Management Subsystem & Slab Allocator (Phase 20)**: Complete physical and virtual memory overhaul:
   - **Bitmap Frame Allocator**: O(1) bit-indexed physical frame manager covering up to 4 GiB of RAM, initialized directly from the UEFI memory map (`BootInfo::memory_regions`), tracking total, allocated, and free frames.
   - **Kernel Virtual Memory API**: Safe primitives `map_page`, `unmap_page`, `alloc_pages`, and `free_pages` with granular architecture-neutral permission flags (`PageFlags`: `KERNEL_DATA`, `KERNEL_RO`, `KERNEL_CODE`, `USER_DATA`, `USER_CODE`).
