@@ -32,9 +32,11 @@ pub mod framebuffer;
 // called from `main.rs` anymore, hence the dead-code allowance.
 #[allow(dead_code)]
 pub mod splash;
+pub mod ttf;
 
 // Flat re-exports so upper layers can `use graphics::{Color, Graphics}`.
 // (Phase 3's window manager will live on these two names.)
 #[allow(unused_imports)] // used via `graphics::Color` from Phase 3 onward
 pub use color::Color;
 pub use framebuffer::Graphics;
+pub use ttf::FontType;

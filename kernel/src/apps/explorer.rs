@@ -274,12 +274,20 @@ impl Explorer {
                     } else {
                         "[FILE]"
                     };
-                    let mut name = clip(&entry.name, NAME_CLIP.saturating_sub(7));
+                    let size_str = if entry.is_dir {
+                        String::new()
+                    } else if entry.size >= 1024 {
+                        format!(" {}KB", entry.size / 1024)
+                    } else {
+                        format!(" {}B", entry.size)
+                    };
+                    let max_name = NAME_CLIP.saturating_sub(7 + size_str.len()).max(8);
+                    let mut name = clip(&entry.name, max_name);
                     if entry.is_dir {
                         name.push('/');
                     }
                     let mark = if i == self.selected { "> " } else { "  " };
-                    format!("{mark}{tag} {name}")
+                    format!("{mark}{tag} {name}{size_str}")
                 }
                 None => String::new(),
             };

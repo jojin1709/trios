@@ -92,6 +92,8 @@ pub enum KeyCode {
     Delete,
     Home,
     End,
+    PageUp,
+    PageDown,
     /// Modifier keys report their own press/release events too, so a
     /// future text-input field can track Ctrl/Alt combos.
     Shift,
@@ -121,6 +123,8 @@ impl fmt::Display for KeyCode {
             KeyCode::Delete => f.write_str("Delete"),
             KeyCode::Home => f.write_str("Home"),
             KeyCode::End => f.write_str("End"),
+            KeyCode::PageUp => f.write_str("PageUp"),
+            KeyCode::PageDown => f.write_str("PageDown"),
             KeyCode::Shift => f.write_str("Shift"),
             KeyCode::Ctrl => f.write_str("Ctrl"),
             KeyCode::Alt => f.write_str("Alt"),

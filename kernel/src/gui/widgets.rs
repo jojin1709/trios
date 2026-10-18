@@ -108,6 +108,9 @@ impl Button {
 
     pub fn draw(&self, g: &mut Graphics, ox: i32, oy: i32, theme: &Theme) {
         let r = self.rect;
+        if r.w <= 0 || r.h <= 0 {
+            return;
+        }
         let face = match self.state {
             ButtonState::Idle => theme.button_bg,
             ButtonState::Hover => theme.button_bg_hover,

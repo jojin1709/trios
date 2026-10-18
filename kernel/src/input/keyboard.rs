@@ -224,6 +224,8 @@ fn map_code(code: u8, extended: bool, mods: u8) -> KeyCode {
             0x53 => KeyCode::Delete,
             0x47 => KeyCode::Home,
             0x4F => KeyCode::End,
+            0x49 => KeyCode::PageUp,
+            0x51 => KeyCode::PageDown,
             0x5B | 0x5C => KeyCode::Super,
             _ => KeyCode::Unknown(code),
         };

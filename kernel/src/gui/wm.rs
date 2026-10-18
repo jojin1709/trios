@@ -384,6 +384,7 @@ struct TaskbarTargets {
     browser: u64,
     sysmon: u64,
     mines: u64,
+    settings: u64,
 }
 
 /// The compositor + interaction state machine.
@@ -419,6 +420,8 @@ pub struct WindowManager {
     pub start_menu: StartMenuState,
     pub quick_settings: QuickSettingsState,
     pub alt_tab: AltTabState,
+    // Phase 19 Lock Screen State
+    pub is_locked: bool,
 }
 
 impl WindowManager {
@@ -445,6 +448,7 @@ impl WindowManager {
             start_menu: StartMenuState::default(),
             quick_settings: QuickSettingsState::default(),
             alt_tab: AltTabState::default(),
+            is_locked: false,
         }
     }
 
@@ -762,7 +766,7 @@ impl WindowManager {
     /// [`taskbar_click`] answers `None`.
     ///
     /// [`taskbar_click`]: Self::taskbar_click
-    pub fn set_taskbar_targets(&mut self, files: u64, editor: u64, terminal: u64, browser: u64, sysmon: u64, mines: u64) {
+    pub fn set_taskbar_targets(&mut self, files: u64, editor: u64, terminal: u64, browser: u64, sysmon: u64, mines: u64, settings: u64) {
         self.taskbar_targets = Some(TaskbarTargets {
             files,
             editor,
@@ -770,6 +774,7 @@ impl WindowManager {
             browser,
             sysmon,
             mines,
+            settings,
         });
     }
 
@@ -781,7 +786,7 @@ impl WindowManager {
     /// nothing).
     /// Bounding rectangle of the floating bottom dock.
     pub fn dock_rect(&self) -> Rect {
-        let dock_w = 540.min(self.screen_w - 16);
+        let dock_w = 590.min(self.screen_w - 16);
         let dock_h = DOCK_H;
         let dock_x = ((self.screen_w - dock_w) / 2).max(8);
         let dock_y = self.screen_h - dock_h - 12;
@@ -794,11 +799,11 @@ impl WindowManager {
         Rect::new(d.x + 8, d.y + (d.h - 40) / 2, 40, 40)
     }
 
-    /// Global rects for the 6 application buttons inside the dock.
-    pub fn dock_button_rects(&self) -> [Rect; 6] {
+    /// Global rects for the 7 application buttons inside the dock.
+    pub fn dock_button_rects(&self) -> [Rect; 7] {
         let d = self.dock_rect();
         let icon_x0 = d.x + 8 + 40 + 10;
-        let mut rects = [Rect::new(0, 0, 40, 40); 6];
+        let mut rects = [Rect::new(0, 0, 40, 40); 7];
         for (i, r) in rects.iter_mut().enumerate() {
             r.x = icon_x0 + (i as i32 * 46);
             r.y = d.y + (d.h - 40) / 2;
@@ -812,7 +817,7 @@ impl WindowManager {
     pub fn dock_tray_rect(&self) -> Rect {
         let d = self.dock_rect();
         let buttons = self.dock_button_rects();
-        let sep2_x = buttons[5].right() + 6;
+        let sep2_x = buttons[6].right() + 6;
         Rect::new(sep2_x + 6, d.y + 4, (d.right() - sep2_x - 12).max(40), d.h - 8)
     }
 
@@ -860,10 +865,7 @@ impl WindowManager {
             Icon::Terminal | Icon::FileElf => targets.terminal,
             Icon::Browser => targets.browser,
             Icon::Mines => targets.mines,
-            Icon::Settings => {
-                self.quick_settings.open = true;
-                return;
-            }
+            Icon::Settings => targets.settings,
             Icon::Trash => {
                 crate::gui::notify("Recycle Bin", "Trash is empty", crate::gui::NotificationKind::Info);
                 return;
@@ -888,6 +890,24 @@ impl WindowManager {
 
     /// Global key shortcuts (Win/Super, Alt+Tab, Start Menu & Context Menu navigation).
     pub fn handle_global_key(&mut self, ev: input::KeyEvent) -> bool {
+        // Lock screen shortcut (Ctrl+L)
+        if (ev.code == input::KeyCode::Char('l') || ev.code == input::KeyCode::Char('L')) && ev.modifiers.ctrl && ev.pressed {
+            self.is_locked = true;
+            self.start_menu.open = false;
+            self.context_menu = None;
+            self.quick_settings.open = false;
+            crate::gui::notify("Desktop Locked", "Press Enter or Click to Unlock", crate::gui::NotificationKind::Info);
+            return true;
+        }
+
+        if self.is_locked {
+            if ev.pressed {
+                self.is_locked = false;
+                crate::gui::notify("Session Unlocked", "Welcome back, Jojin", crate::gui::NotificationKind::Success);
+            }
+            return true;
+        }
+
         // 1. Super/Win key toggles Start Menu
         if ev.code == input::KeyCode::Super && ev.pressed {
             self.start_menu.open = !self.start_menu.open;
@@ -1083,7 +1103,8 @@ impl WindowManager {
             2 => targets.terminal,
             3 => targets.browser,
             4 => targets.sysmon,
-            _ => targets.mines,
+            5 => targets.mines,
+            _ => targets.settings,
         };
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
             if w.minimized {
@@ -1122,17 +1143,22 @@ impl WindowManager {
 
         // 2. Power popup menu items check
         if self.start_menu.power_menu_open {
-            let pm_r = Rect::new(sm_r.right() - 146, sm_r.y + sm_r.h - 146, 130, 86);
+            let pm_r = Rect::new(sm_r.right() - 146, sm_r.y + sm_r.h - 174, 130, 114);
             if pm_r.contains(cx, cy) {
-                let row = ((cy - pm_r.y) / 28).clamp(0, 2);
+                let row = ((cy - pm_r.y) / 28).clamp(0, 3);
                 match row {
                     0 => {
+                        self.is_locked = true;
+                        self.start_menu.power_menu_open = false;
+                        self.start_menu.open = false;
+                    }
+                    1 => {
                         crate::gui::notify("Power", "System sleeping...", crate::gui::NotificationKind::Info);
                         self.start_menu.power_menu_open = false;
                         self.start_menu.open = false;
                     }
-                    1 => crate::acpi::reboot(),
-                    2 => crate::acpi::poweroff(),
+                    2 => crate::acpi::reboot(),
+                    3 => crate::acpi::poweroff(),
                     _ => {}
                 }
                 return;
@@ -1241,6 +1267,14 @@ impl WindowManager {
         let released = !me.buttons.left && self.prev_buttons.left;
         let right_pressed = me.buttons.right && !self.prev_buttons.right;
         self.prev_buttons = me.buttons;
+
+        if self.is_locked {
+            if pressed {
+                self.is_locked = false;
+                crate::gui::notify("Session Unlocked", "Welcome back, Jojin", crate::gui::NotificationKind::Success);
+            }
+            return None;
+        }
 
         // Context menu hover update
         if let Some(ref mut menu) = self.context_menu {
@@ -1606,6 +1640,12 @@ impl WindowManager {
         self.ensure_wallpaper(g, theme);
         g.blit_full(&self.wallpaper);
 
+        if self.is_locked {
+            self.draw_lock_screen(g, theme);
+            draw_cursor(g, self.cursor);
+            return;
+        }
+
         self.draw_desktop_icons(g, theme);
 
         for win in &self.windows {
@@ -1937,7 +1977,8 @@ impl WindowManager {
                 2 => Icon::Terminal,
                 3 => Icon::Browser,
                 4 => Icon::SysMon,
-                _ => Icon::Mines,
+                5 => Icon::Mines,
+                _ => Icon::Settings,
             };
             icon.draw(g, ix, iy, 32, theme);
 
@@ -1949,7 +1990,8 @@ impl WindowManager {
                     2 => tgt.terminal,
                     3 => tgt.browser,
                     4 => tgt.sysmon,
-                    _ => tgt.mines,
+                    5 => tgt.mines,
+                    _ => tgt.settings,
                 };
                 if let Some(win) = self.windows.iter().find(|w| w.id == target_id) {
                     let dot_color = if win.focused {
@@ -1966,7 +2008,7 @@ impl WindowManager {
         }
 
         // Separator 2
-        let sep2_x = buttons[5].right() + 6;
+        let sep2_x = buttons[6].right() + 6;
         g.fill_rect(sep2_x, dock_r.y + 12, 1, 32, theme.border);
 
         // 3. System Tray (Network, Volume, 2-line IST clock)
@@ -2184,7 +2226,7 @@ impl WindowManager {
         // 8. Power popup menu
         if self.start_menu.power_menu_open {
             let pm_w = 130;
-            let pm_h = 86;
+            let pm_h = 114;
             let pm_x = sm.right() - pm_w - 16;
             let pm_y = sm.y + sm.h - pm_h - 60;
 
@@ -2192,16 +2234,16 @@ impl WindowManager {
             g.fill_rounded_rect(pm_x, pm_y, pm_w as u32, pm_h as u32, BUTTON_RADIUS, theme.surface_hi);
             g.draw_rounded_rect(pm_x, pm_y, pm_w as u32, pm_h as u32, BUTTON_RADIUS, theme.border);
 
-            let options = ["Sleep", "Restart", "Shut down"];
+            let options = ["Lock", "Sleep", "Restart", "Shut down"];
             for (oi, &opt) in options.iter().enumerate() {
                 let oy = pm_y + 4 + oi as i32 * 26;
                 let or = Rect::new(pm_x + 4, oy, pm_w - 8, 24);
                 let is_opt_hover = or.contains(cx, cy) || oi == self.start_menu.power_menu_selected;
                 if is_opt_hover {
-                    let h_col = if oi == 2 { theme.danger } else { theme.selection_bg };
+                    let h_col = if oi == 3 { theme.danger } else { theme.selection_bg };
                     g.fill_rounded_rect(or.x, or.y, or.w as u32, or.h as u32, BUTTON_RADIUS - 2, h_col);
                 }
-                let t_col = if is_opt_hover && oi == 2 { Color::new(0xFF, 0xFF, 0xFF) } else { theme.text };
+                let t_col = if is_opt_hover && oi == 3 { Color::new(0xFF, 0xFF, 0xFF) } else { theme.text };
                 g.draw_text(or.x + 12, or.y + 6, opt, t_col, None, 1);
             }
         }
@@ -2468,6 +2510,87 @@ impl WindowManager {
             let tw = Graphics::text_width(short_title, 1);
             g.draw_text(card.x + (card.w - tw) / 2, card.y + 48, short_title, theme.text, None, 1);
         }
+    }
+
+    /// Draws the centered frosted glass Lock / Login Screen (Win+L / Start Menu -> Lock).
+    fn draw_lock_screen(&self, g: &mut Graphics, theme: &Theme) {
+        // Dim the desktop wallpaper with a dark translucent frosted glass overlay
+        for chunk in g.back.chunks_exact_mut(4) {
+            chunk[0] = (chunk[0] as u16 * 65 / 256) as u8;
+            chunk[1] = (chunk[1] as u16 * 65 / 256) as u8;
+            chunk[2] = (chunk[2] as u16 * 80 / 256) as u8;
+        }
+
+        let card_w = 380;
+        let card_h = 420;
+        let cx = (self.screen_w - card_w) / 2;
+        let cy = (self.screen_h - card_h) / 2 - 20;
+
+        // Shadow & frosted glass card body
+        g.fill_rounded_rect(cx - 6, cy - 4, (card_w + 12) as u32, (card_h + 16) as u32, 20, Color::new(0x04, 0x06, 0x10));
+        g.fill_rounded_rect(cx, cy, card_w as u32, card_h as u32, 16, theme.surface);
+        g.draw_rounded_rect(cx, cy, card_w as u32, card_h as u32, 16, theme.accent_cyan);
+
+        // User Avatar Circle
+        let avatar_r = 36;
+        let av_cx = cx + card_w / 2;
+        let av_cy = cy + 62;
+        let r2 = avatar_r * avatar_r;
+        for dy in -avatar_r..=avatar_r {
+            let dx = crate::graphics::framebuffer::int_sqrt(r2 - dy * dy);
+            g.fill_rect(av_cx - dx, av_cy + dy, (dx * 2 + 1) as u32, 1, theme.surface_hi);
+        }
+        for dy in -avatar_r..=avatar_r {
+            let dx = crate::graphics::framebuffer::int_sqrt(r2 - dy * dy);
+            g.fill_rect(av_cx - dx, av_cy + dy, 2, 1, theme.accent_cyan);
+            g.fill_rect(av_cx + dx - 1, av_cy + dy, 2, 1, theme.accent_cyan);
+        }
+        // Avatar monogram "J"
+        g.draw_text_ttf(av_cx - 6, av_cy - 10, "J", Color::new(0xFF, 0xFF, 0xFF), crate::graphics::FontType::UI);
+
+        // Username
+        let user_str = "Jojin";
+        let uw = g.measure_ttf(user_str, crate::graphics::FontType::UI);
+        g.draw_text_ttf(cx + (card_w - uw) / 2, cy + 115, user_str, theme.text, crate::graphics::FontType::UI);
+
+        // Role chip
+        let role_str = "Administrator";
+        let rw = g.measure_ttf(role_str, crate::graphics::FontType::UI);
+        g.draw_text_ttf(cx + (card_w - rw) / 2, cy + 138, role_str, theme.accent_cyan, crate::graphics::FontType::UI);
+
+        // Live RTC Clock
+        let dt = crate::timer::read_rtc();
+        let time_str = alloc::format!("{:02}:{:02}", dt.hour, dt.minute);
+        let tw = g.measure_ttf(&time_str, crate::graphics::FontType::UI);
+        g.draw_text_ttf(cx + (card_w - tw) / 2, cy + 175, &time_str, Color::new(0xFF, 0xFF, 0xFF), crate::graphics::FontType::UI);
+
+        let date_str = alloc::format!("{:04}-{:02}-{:02}  •  IST", dt.year, dt.month, dt.day);
+        let dw = g.measure_ttf(&date_str, crate::graphics::FontType::UI);
+        g.draw_text_ttf(cx + (card_w - dw) / 2, cy + 205, &date_str, theme.text_dim, crate::graphics::FontType::UI);
+
+        // Password field
+        let pw_x = cx + 40;
+        let pw_y = cy + 250;
+        let pw_w = card_w - 80;
+        let pw_h = 36;
+        g.fill_rounded_rect(pw_x, pw_y, pw_w as u32, pw_h as u32, 6, theme.surface_hi);
+        g.draw_rounded_rect(pw_x, pw_y, pw_w as u32, pw_h as u32, 6, theme.border);
+        g.draw_text_ttf(pw_x + 14, pw_y + 10, "••••••••••••", theme.accent_cyan, crate::graphics::FontType::UI);
+
+        // Unlock Button
+        let btn_x = cx + 60;
+        let btn_y = cy + 305;
+        let btn_w = card_w - 120;
+        let btn_h = 36;
+        g.fill_rounded_rect(btn_x, btn_y, btn_w as u32, btn_h as u32, 6, theme.accent_cyan);
+        let unlock_str = "Unlock Session";
+        let un_w = g.measure_ttf(unlock_str, crate::graphics::FontType::UI);
+        g.draw_text_ttf(btn_x + (btn_w - un_w) / 2, btn_y + 10, unlock_str, Color::new(0x0B, 0x0F, 0x1A), crate::graphics::FontType::UI);
+
+        // Bottom hint
+        let hint_str = "Press Enter or Click to Unlock";
+        let hw = g.measure_ttf(hint_str, crate::graphics::FontType::UI);
+        g.draw_text_ttf(cx + (card_w - hw) / 2, cy + 365, hint_str, theme.text_dim, crate::graphics::FontType::UI);
     }
 }
 

@@ -27,6 +27,7 @@ spin = "0.9"
 # defaults pull in `std`, which cannot link into a no_std kernel. The
 # `legacy::BASIC_LEGACY` table (ASCII 0x00..0x80) needs no features at all.
 font8x8 = { version = "0.3", default-features = false }
+fontdue = { version = "0.9", default-features = false, features = ["hashbrown"] }
 
 # The kernel profile: thin the panic strategy is fixed by x86_64-unknown-none
 # (panic=abort, no red zone, no SSE).

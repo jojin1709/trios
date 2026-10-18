@@ -184,6 +184,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     );
     serial_println!("[heap   ] alloc test PASS: {summary}");
 
+    // Phase 19: High-Resolution TTF Typography Engine (Inter + JetBrains Mono)
+    graphics::ttf::init();
+    serial_println!("[ttf     ] Typography engine initialized: Inter (UI) + JetBrains Mono (Code)");
+
     // Phase 5: Initialize kernel thread scheduler
     sched::init();
 
@@ -380,6 +384,56 @@ const CURSOR_STEP_FINE: i32 = 4;
 ///     -> act (windows, labels, animations) -> compose -> flush -> hlt
 /// ```
 ///
+fn render_boot_splash(gfx: &mut graphics::Graphics) {
+    let screen_w = gfx.width() as i32;
+    let screen_h = gfx.height() as i32;
+    let cx = screen_w / 2;
+    let cy = screen_h / 2;
+
+    for step in 0..=30 {
+        gfx.clear(graphics::Color::rgb(0x06080F));
+
+        // Procedural TriOS Triad Logo
+        let ly = cy - 60;
+        gfx.fill_rounded_rect(cx - 32, ly - 32, 64, 64, 16, graphics::Color::rgb(0x0F172A));
+        gfx.draw_rounded_rect(cx - 32, ly - 32, 64, 64, 16, graphics::Color::rgb(0x22D3EE));
+        gfx.draw_line(cx - 16, ly + 16, cx, ly - 16, graphics::Color::rgb(0x22D3EE));
+        gfx.draw_line(cx, ly - 16, cx + 16, ly + 16, graphics::Color::rgb(0x8B5CF6));
+        gfx.draw_line(cx - 16, ly + 16, cx + 16, ly + 16, graphics::Color::rgb(0x22D3EE));
+
+        let title = "TriOS Operating System";
+        let tw = gfx.measure_ttf(title, graphics::FontType::UI);
+        gfx.draw_text_ttf(cx - tw / 2, cy + 30, title, graphics::Color::rgb(0xFFFFFF), graphics::FontType::UI);
+
+        let sub = "Initializing UEFI Kernel Subsystems...";
+        let sw = gfx.measure_ttf(sub, graphics::FontType::UI);
+        gfx.draw_text_ttf(cx - sw / 2, cy + 58, sub, graphics::Color::rgb(0x94A3B8), graphics::FontType::UI);
+
+        // Smooth Loading Progress Bar
+        let bar_w = 280;
+        let bar_h = 6;
+        let bx = cx - bar_w / 2;
+        let by = cy + 90;
+        gfx.fill_rounded_rect(bx, by, bar_w as u32, bar_h as u32, 3, graphics::Color::rgb(0x1E293B));
+        let progress_w = (bar_w * step) / 30;
+        if progress_w > 0 {
+            gfx.fill_rounded_rect(bx, by, progress_w as u32, bar_h as u32, 3, graphics::Color::rgb(0x22D3EE));
+        }
+
+        gfx.flush();
+    }
+}
+
+/// Phase 3's steady state: the interactive desktop.
+///
+/// Replaces the Phase 2 splash idle loop — same serial heartbeat, plus
+/// PS/2 input, a window manager and three demo windows. The event cycle:
+///
+/// ```text
+/// hlt -> (IRQs fill the queue while we sleep) -> drain ALL events
+///     -> act (windows, labels, animations) -> compose -> flush -> hlt
+/// ```
+///
 /// Never returns; the kernel lives here. Every visible change comes from
 /// an event — a tick (animation/heartbeat), a mouse packet (cursor,
 /// window drags, widget clicks) or a key (Esc closes the focused window).
@@ -387,7 +441,10 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
     use gui::{Theme, Widget, WidgetOutcome, WindowManager};
     use input::{Event, KeyCode, MouseButtons, MouseEvent};
 
-    let theme = Theme::default();
+    // Render boot splash animation before loading desktop
+    render_boot_splash(gfx);
+
+    let mut theme = Theme::default();
     let screen_w = gfx.width() as i32;
     let screen_h = gfx.height() as i32;
     let mut wm = WindowManager::new(screen_w, screen_h);
@@ -530,9 +587,10 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
         apps.browser.win,
         apps.sysmon.win,
         apps.minesweeper.win,
+        apps.settings.win,
     );
     apps.refresh(&mut wm, &ramfs);
-    serial_println!("[apps  ] shell ready: Files, Editor, Terminal, Browser, SysMon, Mines");
+    serial_println!("[apps  ] shell ready: Files, Editor, Terminal, Browser, SysMon, Mines, Settings");
 
     // Welcome starts focused (it was created first; re-assert so the
     // titlebar/border styling and Esc target are unambiguous).
@@ -686,7 +744,7 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                         // anyway (the cursor moved — see the `dirty = true`
                         // at its end), so the flag would be overwritten
                         // before it was read.
-                        apps.on_action(action, &mut wm, &mut ramfs, &theme);
+                        apps.on_action(action, &mut wm, &mut ramfs, &mut theme);
                         match action.outcome {
                             WidgetOutcome::Clicked => {
                                 serial_println!(
@@ -765,6 +823,7 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                                 KeyCode::Char('4') => Some((apps.browser.win, "Browser")),
                                 KeyCode::Char('5') => Some((apps.sysmon.win, "SysMon")),
                                 KeyCode::Char('6') => Some((apps.minesweeper.win, "Mines")),
+                                KeyCode::Char('7') => Some((apps.settings.win, "Settings")),
                                 _ => None,
                             };
                             if let Some((id, name)) = target {

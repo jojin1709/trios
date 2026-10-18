@@ -83,6 +83,9 @@ pub struct Terminal {
     /// Every line ever echoed or printed (capped at [`MAX_SCROLLBACK`]);
     /// the last [`TERM_LINE_COUNT`] are on screen.
     scrollback: Vec<String>,
+    history: Vec<String>,
+    history_idx: Option<usize>,
+    scroll_offset: usize,
 }
 
 impl Terminal {
@@ -111,20 +114,18 @@ impl Terminal {
         let mut this = Self {
             win,
             scrollback: Vec::new(),
+            history: Vec::new(),
+            history_idx: None,
+            scroll_offset: 0,
         };
-        this.push(String::from("TriOS Terminal - type 'help'"));
+        this.push(String::from("TriOS Terminal v1.0 [x86_64]"));
+        this.push(String::from("Logged in as jojin. Type 'help' for commands."));
         this.refresh(wm);
         this
     }
 
     /// Handles one finished pointer interaction inside the "Terminal"
     /// window.
-    ///
-    /// Nothing to handle: labels don't capture the pointer and a
-    /// `TextInput` reports no [`WidgetOutcome`] (typing *is* the
-    /// interaction), so no action can ever name one of our widgets. The
-    /// method exists to satisfy [`super::Apps::on_action`]'s contract and
-    /// always reports "nothing visible changed".
     pub fn on_action(
         &mut self,
         _widget_index: usize,
@@ -135,33 +136,70 @@ impl Terminal {
     }
 
     /// Handles one key press while the "Terminal" window is focused.
-    ///
-    /// Enter submits: read the [`TERM_INPUT`] value, clear the field,
-    /// log the command, echo it, run it and repaint the transcript.
-    /// Every other key (printables, Backspace, ...) is the focused
-    /// field's — `TextInput::handle_key` consumes it in `wm.handle_key`,
-    /// which `main.rs` calls right after this returns.
-    ///
-    /// Returns whether the transcript visibly changed: a blank Enter
-    /// touches nothing and reports `false`.
     pub fn on_key(&mut self, event: KeyEvent, wm: &mut WindowManager, fs: &mut FileSystem) -> bool {
-        if !event.pressed || event.code != KeyCode::Enter {
+        if !event.pressed {
             return false;
         }
+
+        if event.code == KeyCode::PageUp {
+            let max_scroll = self.scrollback.len().saturating_sub(TERM_LINE_COUNT);
+            self.scroll_offset = (self.scroll_offset + 5).min(max_scroll);
+            self.refresh(wm);
+            return true;
+        }
+        if event.code == KeyCode::PageDown {
+            self.scroll_offset = self.scroll_offset.saturating_sub(5);
+            self.refresh(wm);
+            return true;
+        }
+        if event.code == KeyCode::ArrowUp {
+            if !self.history.is_empty() {
+                let next_idx = match self.history_idx {
+                    Some(i) => if i > 0 { i - 1 } else { 0 },
+                    None => self.history.len() - 1,
+                };
+                self.history_idx = Some(next_idx);
+                if let Some(cmd) = self.history.get(next_idx) {
+                    set_field(wm, self.win, TERM_INPUT, cmd);
+                    return true;
+                }
+            }
+        }
+        if event.code == KeyCode::ArrowDown {
+            if let Some(i) = self.history_idx {
+                if i + 1 < self.history.len() {
+                    self.history_idx = Some(i + 1);
+                    if let Some(cmd) = self.history.get(i + 1) {
+                        set_field(wm, self.win, TERM_INPUT, cmd);
+                        return true;
+                    }
+                } else {
+                    self.history_idx = None;
+                    set_field(wm, self.win, TERM_INPUT, "");
+                    return true;
+                }
+            }
+        }
+
+        if event.code != KeyCode::Enter {
+            return false;
+        }
+
         let raw = wm.text_value(self.win, TERM_INPUT).unwrap_or_default();
         let command = raw.trim();
         if command.is_empty() {
-            // Nothing typed: the field is already empty, so there is
-            // nothing to clear, log or repaint.
             return false;
         }
         set_field(wm, self.win, TERM_INPUT, "");
+        self.scroll_offset = 0;
+        self.history_idx = None;
+        if self.history.last().map(String::as_str) != Some(command) {
+            self.history.push(String::from(command));
+        }
         serial_println!("[apps  ] term: {command}");
 
-        self.push(format!("> {command}"));
+        self.push(format!("jojin@trios:/$ {command}"));
         if command == "clear" {
-            // "clear" means clear — including its own echo, which is
-            // already in the buffer above.
             self.scrollback.clear();
             self.refresh(wm);
             return true;
@@ -649,13 +687,18 @@ impl Terminal {
     /// [`Self::scrollback`]: newest at the bottom, older lines scrolling
     /// off the top, short transcripts leaving blank rows above.
     fn refresh(&self, wm: &mut WindowManager) {
-        let start = self.scrollback.len().saturating_sub(TERM_LINE_COUNT);
+        let total = self.scrollback.len();
+        let end = total.saturating_sub(self.scroll_offset);
+        let start = end.saturating_sub(TERM_LINE_COUNT);
         for i in 0..TERM_LINE_COUNT {
-            let text = self
-                .scrollback
-                .get(start + i)
-                .map(|line| clip(line, LINE_CLIP))
-                .unwrap_or_default();
+            let text = if start + i < end {
+                self.scrollback
+                    .get(start + i)
+                    .map(|line| clip(line, LINE_CLIP))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
             wm.set_label(self.win, TERM_LINES + i, text);
         }
     }

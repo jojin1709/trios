@@ -332,8 +332,9 @@ impl Editor {
         for i in 0..ED_LINE_COUNT {
             let text = match self.lines.get(i) {
                 Some(line) => {
-                    let mark = if i == self.selected { "> " } else { "  " };
-                    format!("{mark}{}", clip(line, LINE_CLIP))
+                    let mark = if i == self.selected { ">" } else { " " };
+                    let lnum = i + 1;
+                    format!("{mark}{lnum:2}| {}", clip(line, LINE_CLIP.saturating_sub(5)))
                 }
                 None => String::new(),
             };

@@ -37,32 +37,34 @@
 //! [`crate::gui::WindowManager::compose`] at most once per batch — the
 //! same discipline the demo windows already follow.
 
+pub mod browser;
 pub mod editor;
 pub mod explorer;
-pub mod terminal;
-pub mod browser;
-pub mod sysmon;
 pub mod minesweeper;
+pub mod settings;
+pub mod sysmon;
+pub mod terminal;
 
 use alloc::string::String;
 
+pub use browser::Browser;
 pub use editor::Editor;
 pub use explorer::Explorer;
-pub use terminal::Terminal;
-pub use browser::Browser;
-pub use sysmon::SysMon;
 pub use minesweeper::Minesweeper;
+pub use settings::Settings;
+pub use sysmon::SysMon;
+pub use terminal::Terminal;
 
 use crate::event::KeyEvent;
 use crate::fs::FileSystem;
 use crate::gui::{Theme, WidgetAction, WindowManager};
 
-/// The shell's six applications plus their window ids.
+/// The shell's seven applications plus their window ids.
 ///
 /// Create once at boot with [`Apps::new`] — the windows exist from the
 /// first frame (the CI screenshots at 3/8/15/30 s prove it) rather than
 /// appearing on first click, which also means the taskbar buttons and
-/// the `Ctrl+1/2/3/4/5/6` hotkeys have something to focus immediately after
+/// the `Ctrl+1/2/3/4/5/6/7` hotkeys have something to focus immediately after
 /// `desktop_run` starts.
 pub struct Apps {
     /// The "Files" window: browse, select, create.
@@ -77,10 +79,12 @@ pub struct Apps {
     pub sysmon: SysMon,
     /// The "Minesweeper" window: interactive retro desktop puzzle game.
     pub minesweeper: Minesweeper,
+    /// The "Settings" window: live preferences, accents, and hardware telemetry.
+    pub settings: Settings,
 }
 
 impl Apps {
-    /// Builds all six app windows on `wm` (in that z-order) and
+    /// Builds all seven app windows on `wm` (in that z-order) and
     /// returns the shell.
     pub fn new(wm: &mut WindowManager, theme: &Theme) -> Self {
         Self {
@@ -90,6 +94,7 @@ impl Apps {
             browser: Browser::new(wm, theme),
             sysmon: SysMon::new(wm, theme),
             minesweeper: Minesweeper::new(wm, theme),
+            settings: Settings::new(wm, theme),
         }
     }
 
@@ -116,6 +121,7 @@ impl Apps {
             || window_id == self.browser.win
             || window_id == self.sysmon.win
             || window_id == self.minesweeper.win
+            || window_id == self.settings.win
     }
 
     /// Is one of the shell's windows the *focused* one? (Convenience
@@ -131,7 +137,7 @@ impl Apps {
         action: WidgetAction,
         wm: &mut WindowManager,
         fs: &mut FileSystem,
-        theme: &Theme,
+        theme: &mut Theme,
     ) -> bool {
         if action.window_id == self.explorer.win {
             self.explorer.on_action(
@@ -157,6 +163,9 @@ impl Apps {
         } else if action.window_id == self.minesweeper.win {
             self.minesweeper
                 .on_action(action.widget_index, action.outcome, wm)
+        } else if action.window_id == self.settings.win {
+            self.settings
+                .on_action(action.widget_index, action.outcome, wm, theme)
         } else {
             false
         }
@@ -185,6 +194,8 @@ impl Apps {
             self.sysmon.on_key(event, wm)
         } else if window_id == self.minesweeper.win {
             self.minesweeper.on_key(event, wm)
+        } else if window_id == self.settings.win {
+            self.settings.on_key(event, wm)
         } else {
             false
         }

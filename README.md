@@ -61,7 +61,7 @@ TriOS is a modern, bare-metal operating system built from the ground up in Rust 
 
 ## Architecture & Status
 
-TriOS has completed **Phase 0 through Phase 17**:
+TriOS has completed **Phase 0 through Phase 19**:
 
 | Phase | Milestone | Status | Key Subsystems |
 | :--- | :--- | :---: | :--- |
@@ -84,11 +84,16 @@ TriOS has completed **Phase 0 through Phase 17**:
 | **Phase 16** | Modern Desktop UI/UX & TriSweeper | **Done** | Desktop shortcut icons, modern taskbar with active indicators, window controls (`_`, `□`, `✕`), and TriSweeper puzzle game (`Ctrl+6`) |
 | **Phase 17** | Display + Visual Foundation | **Done** | Native 1080p GOP resolution, futuristic glass theme (`gui/theme.rs`), cached vertical gradient wallpaper with dot grid & faint emblem, floating centered dock, 32px titlebars with 10px rounded corners & drop shadows, floating toast, and 32 MiB heap |
 | **Phase 18** | Desktop Experience | **Done** | Procedural vector icons (`gui/icons.rs`), Start Menu with app search & ACPI power popup, Quick Settings tray with Night Light filter & sliders, desktop icon selection & double-click, reusable Context Menu, top-right Toast notification system, Alt+Tab switcher & Super key |
+| **Phase 19** | Typography & System Apps | **Done** | Fontdue TTF vector typography (`Inter` & `JetBrains Mono`), Settings App (`Ctrl+7`), Boot splash animation, Lock Screen (`Ctrl+L`), app polish |
 
 ---
 
 ## Key Features
 
+- **TTF Vector Typography Engine (Phase 19)**: Replaced the primitive 8x8 bitmap font with authentic TrueType vector rendering powered by `fontdue` in `#![no_std]`. Embeds `Inter-Regular.ttf` for UI text and `JetBrainsMono-Regular.ttf` for code/terminals with sub-pixel rasterization, pre-cached ASCII glyphs, and direct framebuffer alpha blending.
+- **Settings App & Live Theme Customizer (Phase 19)**: Modern 6-tab system preferences control center (`Ctrl+7`): Display (GOP resolution & linear framebuffer), Personalization (live accent color swatches: Cyan, Violet, Green, Orange, Pink; procedural wallpapers; glass transparency toggle), Network (Intel e1000 telemetry & IP configuration), Sound (HDA volume control), Date & Time (hardware CMOS RTC clock & IST timezone), and About (hardware specs & **JOJIN JOHN** credits).
+- **Boot Splash & Lock Screen (Phase 19)**: Animated boot splash screen with glowing TriOS triad procedural emblem and smooth progress bar; lock screen (`Ctrl+L` or Start Menu) featuring frosted glassmorphism card, user avatar, live CMOS clock, administrator credentials, and session unlock.
+- **Enhanced System Applications (Phase 19)**: Files Explorer file sizes and file-type badges (`[DIR]`, `[RS]`, `[TXT]`, `[ELF]`), Text Editor line numbers gutter (`> 1| code`), and Terminal shell prompt `jojin@trios:/$` with command history (Up/Down) and scrollback navigation (PageUp/PageDown).
 - **Desktop Experience & Procedural Vector Icons (Phase 18)**: Complete high-resolution desktop experience with 12 handcrafted vector icons (`gui/icons.rs`) drawn at 32x32 and 48x48 (`This PC`, `Files`, `Editor`, `Terminal`, `Browser`, `SysMon`, `Mines`, `Settings`, `Trash`, and file-type badges `[DIR]`, `[RS]`, `[TXT]`, `[ELF]`) using theme tokens.
 - **Desktop Icon Interaction & Context Menu (Phase 18)**: Single-click desktop icon selection with rounded rect highlight, double-click application launch via PIT monotonic ticks, centered labels with subtle drop shadows. Right-click desktop opens a sleek glass context menu (`New Folder`, `Refresh`, `Display Settings`, `Open Terminal here`). Files Explorer and Text Editor also provide dedicated context menus.
 - **Glass Start Menu with Live App Search (Phase 18)**: Dock Start button or Windows/Super key opens an elevated glass panel above the dock. Includes real-time search filtering across 12 pinned applications, 4x3 pinned application grid, recent items list, user profile chip (`"Jojin"`, Administrator), and ACPI power popup (`Sleep`, `Restart` via ACPI reset, `Shut down` via ACPI S5 poweroff). Dismissable with Esc or clicking outside.
@@ -186,8 +191,11 @@ powershell -ExecutionPolicy Bypass -File .\run-virtualbox.ps1
 | **Ctrl + 4** | Focus and open **Web Browser** |
 | **Ctrl + 5** | Focus and open **System Monitor / Task Manager** |
 | **Ctrl + 6** | Focus and open **TriSweeper (Minesweeper Game)** |
-| **Esc** | Close currently focused window |
-| **Arrow Up / Down** | Navigate items in Files Explorer or scroll terminal / browser |
+| **Ctrl + 7** | Focus and open **Settings App** |
+| **Ctrl + L** | Lock desktop screen (Session Lock) |
+| **Esc** | Close currently focused window / Dismiss menus |
+| **Arrow Up / Down** | Command history in Terminal; move selection in Files/Editor |
+| **PageUp / PageDown** | Scroll Terminal transcript history buffer |
 
 ### Mouse & Keyboard Fallback
 
