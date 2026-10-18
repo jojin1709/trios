@@ -306,10 +306,10 @@ graph TD
 - [x] **Phase 16**: Modern Desktop UI/UX overhaul & TriSweeper retro desktop puzzle game (`Ctrl+6`)
 - [x] **Phase 17**: Display & Visual Foundation (1080p GOP, futuristic glass theme, cached gradient wallpaper, floating dock)
 - [x] **Phase 18**: Desktop Experience (vector icons, Start Menu with live search, Quick Settings with Night Light, desktop selection, context menus, toast notifications, Alt+Tab)
-- [ ] **Phase 19**: Typography & System Apps (TTF font renderer, Settings App Ctrl+7, boot splash, lock/login screen Win+L)
-- [ ] **Phase 20**: Memory Management (bitmap frame allocator, themed page fault handler, guard pages, kernel virt mem API, slab allocator)
-- [ ] **Phase 21**: Real Processes (per-process PML4, ring 3 ELF, syscall table & pointer validation, `ps`, `kill`, hello.elf)
-- [ ] **Phase 22**: VFS & Persistent Writes (mount points `/` ramfs, `/disk` FAT32 write/create/delete/mkdir/rename, fsck-lite)
+- [x] **Phase 19**: Typography & System Apps (Fontdue TTF vector typography, Settings App `Ctrl+7`, boot splash, lock screen `Ctrl+L`)
+- [x] **Phase 20**: Memory Management (bitmap frame allocator, themed page fault screen, thread guard pages, slab allocator 32B..2048B, `meminfo`)
+- [x] **Phase 21**: Real Processes (per-process PML4 page tables, Ring 3 `iretq`/`sysretq`, syscall suite, user pointer validation, fault isolation, `ps` & `kill`)
+- [x] **Phase 22**: VFS & Persistent Writes (unified VFS `/` ramfs & `/disk` FAT, AHCI sector write DMA, multi-FAT write engine, `fsck-lite`)
 
 ---
 
