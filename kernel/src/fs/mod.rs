@@ -80,30 +80,32 @@ pub struct FileSystem {
 // ---------------------------------------------------------------------------
 
 /// Canonicalizes `path` per the module-doc rules: optional leading `/`,
-/// `//` collapsed, `.` dropped, `..` ignored (no root escape).
+/// `//` collapsed, `.` dropped, `..` pops the parent without escaping the root.
 ///
 /// Returns the *bare* form without a leading slash for the root
 /// (`normalize("/a/b") == "/a/b"`, `normalize("//a//./b/../c") == "/a/c"`,
 /// `normalize("///") == ""`). The empty string means "the root directory
 /// itself" — every caller treats it as valid (root always exists).
 fn normalize(path: &str) -> String {
-    let mut out = String::new();
+    let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {
         match part {
-            // Empty (leading slash, `//`, trailing slash) and `.` carry
-            // no information — drop them.
             "" | "." => {}
-            // No parent of the root exists, so `..` cannot pop anything:
-            // ignore the component entirely. This is the *safe* semantics
-            // (compare: a real POSIX fs would pop; a naive concat would
-            // let `/../../x` escape). Ignoring makes traversal attempts
-            // land inside the root instead of anywhere else.
-            ".." => {}
+            ".." => {
+                parts.pop();
+            }
             p => {
-                out.push('/');
-                out.push_str(p);
+                parts.push(p);
             }
         }
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for p in parts {
+        out.push('/');
+        out.push_str(p);
     }
     out
 }

@@ -28,9 +28,9 @@
 //! speaks *scancodes*; only this module knows they exist. Everything
 //! downstream sees [`crate::event::KeyEvent`].
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
-use super::{read_data, wait_input_empty, write_data};
+use super::{CommandLog, RAW_RING_LEN, RawRing, read_data, wait_input_empty, write_data};
 use crate::event::{Event, KeyCode, KeyEvent, Modifiers, push as push_event};
 
 /// Modifier bit positions inside [`MODS`].
@@ -47,17 +47,53 @@ static MODS: AtomicU8 = AtomicU8::new(0);
 /// Also IRQ1-context only.
 static EXTENDED: AtomicBool = AtomicBool::new(false);
 
+/// Total IRQ1 deliveries since boot — the keyboard twin of
+/// `mouse::IRQ_COUNT` (see that constant for the full rationale).
+/// Bumped at the top of [`handle_irq`], before any reading or decoding,
+/// so it tracks *hardware* deliveries even when the byte turns out to be
+/// garbage. Printed once per second by `main.rs`:
+/// `[ps2    ] kb irq count = {n}`. It also cross-checks the mouse
+/// story: keys demonstrably work (Ctrl+3 focuses the Terminal) while
+/// `[ps2    ] mouse irq count = 0` — so a climbing `kb irq count` next
+/// to a flat mouse count isolates the fault to the mouse path
+/// specifically, not the PIC/IDT wiring the two lines share.
+static IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Status register (`0x64`) latched at the moment the last IRQ1 arrived:
+/// bit0 = output buffer full (should be set — an IRQ1 means a byte is
+/// waiting), bit5 = aux source (should be *clear* for keyboard bytes),
+/// bit6 = device timeout, bit7 = parity error. Pure instrumentation —
+/// [`super::read_status`] is a side-effect-free port read. Printed as
+/// `[ps2    ] kb status @irq = 0x{status:02x}`.
+static LAST_STATUS: AtomicU8 = AtomicU8::new(0);
+
+/// Last [`RAW_RING_LEN`] bytes delivered on IRQ1, captured before
+/// decoding (see [`super::RawRing`]). Printed as
+/// `[ps2    ] kb raw: {b0:02x} {b1:02x} ...` — a line that stays all
+/// zeros while `kb irq count` climbs would mean the controller raises
+/// IRQ1 without a byte behind it.
+static RAW: RawRing = RawRing::new();
+
 /// Brings the keyboard side of the controller up: enables scancode
 /// streaming with `0xF4` and waits for the device's `0xFA` ACK.
 ///
 /// The IRQ line itself is unmasked later, by [`super::init`] — this
 /// function only talks to the device.
+///
+/// Every byte the device answers is reported on serial by [`CommandLog`]:
+/// `[ps2    ] kbd <- 0xF4: FA` on success, `[ps2    ] kbd <- 0xF4:
+/// TIMEOUT after 1000000 spins` (plus `; saw <bytes>` if the device
+/// said anything at all) when it doesn't. Before the logging existed, a
+/// keyboard that answered *something other than* `0xFA` failed with no
+/// trace of what it had actually sent.
 pub fn init() -> Result<(), &'static str> {
     // 0xF4 = "enable data reporting / start scanning" — the device
     // answers with 0xFA if it understood us.
-    wait_input_empty()?;
+    let mut log = CommandLog::new("kbd", 0xF4);
+    wait_input_empty("kbd enable scanning (cmd 0xF4)")?;
     write_data(0xF4);
-    super::wait_ack()?;
+    super::wait_ack(&mut log)?;
+    log.flush();
     Ok(())
 }
 
@@ -67,9 +103,47 @@ pub fn init() -> Result<(), &'static str> {
 ///
 /// One byte per IRQ — that's the contract; `handle_irq` must never loop
 /// on the data port here (the controller re-raises IRQ1 per byte anyway).
+///
+/// Instrumentation (no behaviour change): count the delivery, latch the
+/// status byte, capture the raw byte — all lock-free atomics, in that
+/// order, before the decoder runs. See [`IRQ_COUNT`], [`LAST_STATUS`]
+/// and [`RAW`] for the serial lines each one feeds.
 pub fn handle_irq() {
+    // Count first (mirrors `mouse::handle_irq`): the counter must
+    // reflect *hardware* deliveries even if the byte is garbage.
+    IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Latch status for the heartbeat. Reading `0x64` has no side
+    // effects (only reading `0x60` clears the output buffer), so this
+    // extra read cannot perturb the data read below.
+    LAST_STATUS.store(super::read_status(), Ordering::Relaxed);
+
     let byte = read_data();
+    // Capture raw, *before* decoding: `[ps2    ] kb raw:` shows the
+    // bytes as delivered, so "hardware sent nonsense" and "we decoded
+    // nonsense" become distinguishable from the heartbeat alone.
+    RAW.push(byte);
     decode(byte);
+}
+
+/// How many IRQ1s have been delivered since boot (see [`IRQ_COUNT`]).
+/// Printed once per second by the desktop loop as
+/// `[ps2    ] kb irq count = {n}`.
+pub fn kb_irq_count() -> u32 {
+    IRQ_COUNT.load(Ordering::Relaxed)
+}
+
+/// Status byte (`0x64`) as observed at the most recent IRQ1 (see
+/// [`LAST_STATUS`]). Printed as `[ps2    ] kb status @irq = 0x{b:02x}`.
+pub fn status_at_irq() -> u8 {
+    LAST_STATUS.load(Ordering::Relaxed)
+}
+
+/// Oldest-to-newest snapshot of the last [`RAW_RING_LEN`] IRQ1 bytes
+/// (see [`RAW`]). Printed as `[ps2    ] kb raw: {b0:02x} ...` — the most
+/// recent byte is always the last one on the line.
+pub fn raw_bytes() -> [u8; RAW_RING_LEN] {
+    RAW.snapshot()
 }
 
 /// State machine for one scancode byte.

@@ -48,6 +48,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     serial_println!("  rsp = {rsp:#018x}   rbp = {rbp:#018x}");
     serial_println!("System halted — reset or power off the VM to reboot.");
 
+    x86_64::instructions::interrupts::disable();
     loop {
         x86_64::instructions::hlt();
     }

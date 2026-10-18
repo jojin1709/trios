@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["kernel"]
+default-members = ["."]
 
 # Root package: builds the bootable UEFI disk image from the kernel artifact.
 # `cargo build` at the workspace root produces target/<profile>/trios-uefi.img
@@ -17,3 +18,9 @@ license = "MIT"
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 # UEFI-only image creation; the BIOS path is out of scope for TriOS.
 bootloader = { version = "0.11", default-features = false, features = ["uefi"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

@@ -35,6 +35,9 @@ mod interrupts;
 mod memory;
 mod mmio;
 mod panic;
+mod perf;
+mod sched;
+mod syscall;
 mod timer;
 
 extern crate alloc;
@@ -168,6 +171,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     );
     serial_println!("[heap   ] alloc test PASS: {summary}");
 
+    // Phase 5: Initialize kernel thread scheduler
+    sched::init();
+
+    // Phase 6: Initialize fast syscall subsystem (MSRs + sys_call_table)
+    syscall::init();
+
+    // Spawn a background kernel worker thread to verify concurrent multitasking
+    sched::spawn("background_worker", background_worker);
+
     // 6. Phase 3 input: PS/2 keyboard + mouse. Runs with interrupts still
     //    disabled — the init sequence polls the controller directly, and
     //    IRQ1/IRQ12 only get unmasked at the end of it (after both device
@@ -177,6 +189,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // 7. Hardware interrupts from here on.
     x86_64::instructions::interrupts::enable();
     serial_println!("[irq    ] interrupts enabled (sti)");
+
+    // PERF (measurement only, zero behaviour change): calibrate the TSC
+    // against the PIT before any timed code runs. It must come after
+    // `timer::init` above (the PIT must be programmed) — and, found while
+    // placing this call, also after `sti`: `timer::ticks()` only ever
+    // advances from the IRQ0 handler, so at the literal "immediately after
+    // timer::init" spot the interrupt flag is still off, the counter is
+    // frozen, and the calibration spin would end in
+    // "[perf   ] tsc calibration FAILED" on every healthy boot.
+    perf::calibrate();
 
     // The first tick must arrive promptly — spin (not hlt) for a bounded
     // time so a dead PIT/PIC panics with a message instead of hanging the
@@ -451,6 +473,13 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
     // -- the event loop ----------------------------------------------------
     let mut reported = 0u64; // last heartbeat second logged
     let mut clicks = 0u32; // Welcome button press count
+    // PERF (measurement only): per-second loop statistics — a plain local
+    // (no lock, no allocation) fed at the drain/frame/wake hooks below and
+    // flushed once a second by the `report` call in the Tick arm. Module
+    // docs in `perf.rs` map every printed number to the question it
+    // answers (frames/s = redrawing every tick? compose vs flush = who is
+    // expensive? hw_ticks vs evt_ticks = lost IRQs or dropped events?).
+    let mut perf = perf::Perf::new();
     loop {
         let mut dirty = false; // something visible changed this pass
         let mut maybe_close = false; // a window might want closing
@@ -458,7 +487,17 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
         // Drain *everything* the IRQs produced while we slept; act once
         // per batch, then redraw at most once. (Queue capacity 512 ≈ 5 s
         // of ticks — the backlog from the 1 s tick test above fits.)
+        // PERF (measurement only): batch bookkeeping for the 1 Hz report —
+        // `events_in_batch` sizes each drain (a climbing max = the loop is
+        // falling behind its producers), `mouse_in_batch` separates real
+        // input traffic from the 100 Hz tick background.
+        let mut events_in_batch = 0u64;
+        let mut mouse_in_batch = 0u64;
         while let Some(event) = input::poll_event() {
+            events_in_batch += 1;
+            if matches!(event, Event::Mouse(_)) {
+                mouse_in_batch += 1;
+            }
             match event {
                 // -- tick: heartbeat, live About labels, progress sweep ---
                 Event::Tick(n) => {
@@ -477,6 +516,39 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                         serial_println!(
                             "[ps2    ] mouse irq count = {}",
                             input::mouse::irq_count()
+                        );
+                        // Keyboard-side twin of the mouse counter, plus
+                        // the instrumented status/raw captures added for
+                        // the "VirtualBox queues host motion the guest
+                        // never reads" hunt (see `input::keyboard` /
+                        // `input::mouse`): `kb irq count` climbs while
+                        // keys visibly work, so a flat mouse count next
+                        // to it isolates the fault to the mouse path —
+                        // not the shared PIC/IDT wiring. The `status
+                        // @irq` lines are the 0x64 byte each handler
+                        // latched when its IRQ fired (bit0 = byte
+                        // waiting, bit5 = aux source, bit6 = timeout);
+                        // the `raw` lines are each device's last 8 IRQ
+                        // bytes, oldest first, newest last.
+                        serial_println!(
+                            "[ps2    ] kb irq count = {}",
+                            input::keyboard::kb_irq_count()
+                        );
+                        serial_println!(
+                            "[ps2    ] kb status @irq = 0x{:02x}",
+                            input::keyboard::status_at_irq()
+                        );
+                        serial_println!(
+                            "[ps2    ] kb raw: {}",
+                            input::HexBytes::lower(&input::keyboard::raw_bytes())
+                        );
+                        serial_println!(
+                            "[ps2    ] mouse status @irq = 0x{:02x}",
+                            input::mouse::status_at_irq()
+                        );
+                        serial_println!(
+                            "[ps2    ] mouse raw: {}",
+                            input::HexBytes::lower(&input::mouse::raw_bytes())
                         );
                         let (mx, my) = input::mouse::position();
                         serial_println!("[gui    ] cursor at ({mx}, {my})");
@@ -498,6 +570,17 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                                 "[gui    ] warning: {dropped} event(s) dropped since boot"
                             );
                         }
+                        // PERF (measurement only): the 1 Hz report, printed
+                        // right after the heartbeat block's own lines (all
+                        // of which are kept exactly as they were) and once
+                        // per *reported* second — inside `if sec > reported`
+                        // so the counters cover a whole second instead of
+                        // being flushed 100×/s. `n` is the tick value this
+                        // heartbeat event carried (evt_ticks), against the
+                        // hardware truth `timer::ticks()` (hw_ticks) and the
+                        // ring-buffer overflow count — the uptime-anomaly
+                        // discriminator. `report` resets its counters.
+                        perf.report(timer::ticks(), n, event::dropped());
                     }
                     // 2-second 0→1 sweep: proves the tick path drives
                     // animation, not just the log.
@@ -595,7 +678,16 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                                 _ => None,
                             };
                             if let Some((id, name)) = target {
-                                wm.focus(id);
+                                // Focus *and* arm the window's first text
+                                // field. Plain `wm.focus(id)` set the window
+                                // focus but left `focused_widget == None`
+                                // (only a mouse press ever armed a field),
+                                // so `has_text_focus()` answered `false`
+                                // and every printable fell through
+                                // `Window::handle_key` with nothing to
+                                // receive it — silently, with no log line.
+                                // That is the bug; see `focus_and_type`.
+                                wm.focus_and_type(id);
                                 serial_println!("[apps  ] focus: {name}");
                                 dirty = true; // focus styling must repaint
                                 continue; // consumed — skip the rest
@@ -607,9 +699,13 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                         // gate below, because a TextInput does not consume
                         // Enter/arrows (submitting a command, loading a
                         // file or moving a selection is the app's call).
-                        if apps.owns_focus(&wm) {
-                            dirty |= apps.on_key(k, &mut wm, &mut ramfs, &theme);
-                        }
+                        // The answer is kept in `app_changed`: it drives
+                        // `dirty` as before, and doubles as the "did the
+                        // app do *anything* with this key?" bit for the
+                        // dropped-key log in the shell branch below.
+                        let app_changed =
+                            apps.owns_focus(&wm) && apps.on_key(k, &mut wm, &mut ramfs, &theme);
+                        dirty |= app_changed;
                         // Phase 4 (RS-002): while the focused window
                         // routes keys to a text field, printable and
                         // editing keys belong to it. Without this gate
@@ -629,10 +725,22 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                             // own Enter — and report through the apps'
                             // serial lines instead of this one.
                             let demo = wm.focused_window() == Some(playground);
+                            // Snapshot the armed field *before* the key
+                            // reaches it: the diff after `handle_key` is
+                            // the end-to-end serial proof (scancode →
+                            // KeyEvent → focused TextInput → visible
+                            // edit). The demo reads its known widget
+                            // index; any other armed field — in this
+                            // branch always a shell window's, armed by
+                            // `focus_and_type` — reads whichever field is
+                            // live. Both report through the *same* one
+                            // `[gui    ] text field: "..."` line below,
+                            // so the demo's existing proof is reused, not
+                            // duplicated.
                             let before = if demo {
                                 wm.text_value(playground, W_PLAY_TEXT_INPUT)
                             } else {
-                                None
+                                wm.focused_text_value()
                             };
                             match k.code {
                                 KeyCode::Enter if demo => {
@@ -649,16 +757,26 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                                 _ => {}
                             }
                             wm.handle_key(k);
-                            if demo {
-                                let after = wm.text_value(playground, W_PLAY_TEXT_INPUT);
-                                if after != before
-                                    && let Some(v) = after
-                                {
-                                    // The end-to-end pipeline proof: scancode
-                                    // -> KeyEvent -> focused TextInput ->
-                                    // visible edit + serial line.
-                                    serial_println!("[gui    ] text field: \"{v}\"");
-                                }
+                            let after = if demo {
+                                wm.text_value(playground, W_PLAY_TEXT_INPUT)
+                            } else {
+                                wm.focused_text_value()
+                            };
+                            if after != before
+                                && let Some(v) = after
+                            {
+                                // The end-to-end pipeline proof: scancode
+                                // -> KeyEvent -> focused TextInput ->
+                                // visible edit + serial line. The shell
+                                // fields reporting through the demo's line
+                                // format is deliberate: one format, one
+                                // grep, and a keyboard-only user's very
+                                // first `text field:` line is the evidence
+                                // their keystroke landed. (`after == None`
+                                // means the demo's commit-and-release just
+                                // cleared the field — the `commit:` line
+                                // above already reported that case.)
+                                serial_println!("[gui    ] text field: \"{v}\"");
                             }
                             dirty = true;
                         } else if apps.owns_focus(&wm) {
@@ -677,6 +795,24 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                                     serial_println!("[gui    ] key Esc — closing focused window");
                                     maybe_close = true;
                                     dirty = true; // the reap must repaint
+                                }
+                                // Neither the app (`app_changed == false`)
+                                // nor a text field (none is armed here —
+                                // `focus_and_type` arms on focus, but a
+                                // body click can still disarm) wanted this
+                                // key: `wm.handle_key` below has nothing
+                                // to forward to either, so it is about to
+                                // fall out of the event loop *without a
+                                // trace*. Log it. This is the exact hole
+                                // the "Ctrl+3, then `help` produced
+                                // nothing" bug hid in — a dropped
+                                // printable was invisible on serial, so
+                                // nothing could tell "the shell ate my
+                                // key" from "the scancode never arrived".
+                                // Keys the app *did* act on skip this arm:
+                                // their own `[apps  ]` line is the record.
+                                other if !app_changed => {
+                                    serial_println!("[gui    ] key {other}")
                                 }
                                 _ => {}
                             }
@@ -760,6 +896,10 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
             }
         }
 
+        // PERF (measurement only): one drain pass done — hand this batch's
+        // numbers to the 1 Hz aggregator. Nothing above is affected.
+        perf.on_drain(events_in_batch, mouse_in_batch);
+
         // Close anything the user dismissed (X button or Esc). Only when
         // something *might* have asked for it — `reap` allocates a tiny
         // Vec, and the loop runs at 100 Hz.
@@ -768,11 +908,59 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
         }
 
         if dirty {
+            // PERF (measurement only): the compose/flush split, timed with
+            // fenced TSC reads. The two calls themselves and every rule
+            // around them (the `if dirty` gate especially) are untouched —
+            // the timestamps only *bracket* them. compose_avg/max vs
+            // flush_avg/max in the 1 Hz report says which half owns the
+            // per-frame cost (full-screen clear vs 3 MiB hardware copy).
+            let t0 = perf::tsc_now();
             wm.compose(gfx, &theme);
+            let t1 = perf::tsc_now();
             gfx.flush();
+            let t2 = perf::tsc_now();
+            perf.on_frame(perf::us_between(t0, t1), perf::us_between(t1, t2));
         }
+
+        // Yield CPU to any ready background threads before sleeping
+        sched::yield_now();
 
         // Sleep until the next IRQ; the queue fills while we're halted.
         x86_64::instructions::hlt();
+
+        // PERF (measurement only): count this wakeup *after* `hlt` returns,
+        // so every increment is a proven resume — an IRQ actually brought
+        // the CPU back (before `hlt` would count sleep *entries* instead;
+        // the two coincide today because the loop has no other exit path,
+        // but the post-`hlt` spot stays semantically "wakeups" either way).
+        // wakes/s vs frames/s separates "the loop woke 100×/s but redrew
+        // every one of them" from "it woke 100×/s and redrew only N".
+        perf.on_wake();
     }
 }
+
+/// Background worker thread to verify preemptive/cooperative multitasking and syscalls.
+extern "C" fn background_worker() {
+    serial_println!("[worker ] background thread started!");
+
+    // Phase 6 verification: execute real syscall instruction from thread
+    let test_msg = "[worker ] live syscall SYS_WRITE verified!\n";
+    syscall::syscall(
+        syscall::table::SYS_WRITE,
+        1, // stdout
+        test_msg.as_ptr() as usize,
+        test_msg.len(),
+    );
+
+    let mut iteration = 0u64;
+    loop {
+        // Sleep for 100 ticks (1 second at 100 Hz)
+        sched::sleep_ticks(100);
+        iteration += 1;
+        let uptime = syscall::syscall(syscall::table::SYS_UPTIME, 0, 0, 0);
+        serial_println!(
+            "[worker ] alive: iteration #{iteration}, uptime via sys_uptime={uptime}s"
+        );
+    }
+}
+

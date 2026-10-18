@@ -341,6 +341,10 @@ impl WindowManager {
     /// `focused_id = <dead id>` would point the keyboard at a window that
     /// is no longer drawn (and make `Apps::owns_focus` claim keys for it),
     /// so the honest answer is to keep the current focus untouched.
+    ///
+    /// Those two callers (and any path that must leave the window *ready
+    /// to type in*) want [`focus_and_type`] instead — plain [`focus`]
+    /// alone is what caused the dropped-key bug described there.
     pub fn focus(&mut self, id: u64) {
         if !self.windows.iter().any(|w| w.id == id) {
             return;
@@ -357,6 +361,66 @@ impl WindowManager {
         // Re-establish the ascending-z invariant (create appends the max,
         // focus can jump any window to the top).
         self.windows.sort_by_key(|w| w.z);
+    }
+
+    /// Focuses `id` **and** arms its first text field for typing — the
+    /// keyboard half of "click a text field" (the *mouse* half is the
+    /// `Zone::Body` arm of [`handle_mouse`], which writes
+    /// `focused_widget` from the widget under the cursor).
+    ///
+    /// ### Why this exists (the dropped-key bug it prevents)
+    ///
+    /// [`focus`] deliberately leaves `focused_widget` alone, so *before*
+    /// this method existed the mouse press path was the **only** thing
+    /// that ever armed a field. Any focus that arrived some other way —
+    /// the `Ctrl+1/2/3` hotkey in `main.rs`, a taskbar button — left
+    /// `focused_widget == None`, hence `has_text_focus() == false`,
+    /// hence [`Window::handle_key`] forwarded the key to *nobody*: the
+    /// printable fell through to the Esc check, failed it, and vanished
+    /// **without a log line**. On the target VirtualBox the PS/2 mouse is
+    /// dead (`[ps2] mouse irq count = 0` forever), so no click could
+    /// ever repair that state — focusing a window without arming its
+    /// field made the whole shell type-blind. Focus and "ready to type"
+    /// must be one step for keyboard-driven focus, or the keyboard goes
+    /// quiet exactly when it is the only input device that works.
+    ///
+    /// The scan picks the **first** `TextInput` in creation order (the
+    /// widget vec *is* the address space — see `apps`), which is each
+    /// shell window's primary field: the Terminal prompt
+    /// (`terminal::TERM_INPUT`), the Editor's filename box
+    /// (`editor::ED_PATH`) and the Explorer's "new file name" prompt
+    /// (`explorer::EX_INPUT`). A window with no text field leaves
+    /// `focused_widget` as `None`, and an unknown id is a no-op — the
+    /// same contract as [`focus`].
+    ///
+    /// ### Explorer Backspace (verified by reading, not assumed)
+    ///
+    /// Arming the Explorer's prompt does **not** make `Backspace` fire
+    /// twice: `Explorer::on_key` guards its "up one dir" with
+    /// `KeyCode::Backspace if !wm.has_text_focus()`, and `main.rs` runs
+    /// `apps.on_key` *before* `wm.handle_key` — so the guard always sees
+    /// the armed state and exactly one handler acts per press (armed =>
+    /// the caret deletes a character, the guard suppresses `go_up`;
+    /// unarmed => `go_up`, no field receives the key). Arrow-key row
+    /// navigation and Enter opening a row keep working for the same
+    /// reason: `TextInput::handle_key` consumes neither (it only takes
+    /// Char/Backspace/Delete/Left/Right/Home/End — see `widgets.rs`).
+    ///
+    /// Called from the `Ctrl+1/2/3` hotkey in `main.rs` and the taskbar
+    /// press in [`handle_mouse`].
+    pub fn focus_and_type(&mut self, id: u64) {
+        self.focus(id);
+        // Unknown id: `focus` was a no-op, so there is nothing to arm
+        // (the `find` below misses too — kept as the honest guard for
+        // "window exists" rather than re-deriving `focus`'s check).
+        let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
+            return;
+        };
+        w.focused_widget = w
+            .widgets
+            .iter()
+            .position(|wg| matches!(wg, Widget::TextInput(_)));
+        sync_text_focus(w);
     }
 
     /// Removes a window by id (logged).
@@ -484,6 +548,27 @@ impl WindowManager {
                 Widget::TextInput(t) => Some(t.value.clone()),
                 _ => None,
             })
+    }
+
+    /// Reads the value of the **armed** text field — the focused window's
+    /// `focused_widget`, when that widget is a `TextInput` — or `None`
+    /// when no field is armed.
+    ///
+    /// This is [`text_value`] without the caller having to know *which*
+    /// widget is armed: the main loop snapshots it around
+    /// [`Window::handle_key`] and logs `[gui    ] text field: "..."`
+    /// when the value changes — the serial line that proves a keystroke
+    /// actually travelled scancode → `KeyEvent` → focused `TextInput`.
+    /// Before this existed only the Playground demo field could be
+    /// verified that way (by hard-coded index), which is precisely how
+    /// shell fields went silently dead — see [`focus_and_type`].
+    pub fn focused_text_value(&self) -> Option<String> {
+        let id = self.focused_id?;
+        let w = self.windows.iter().find(|w| w.id == id)?;
+        match w.widgets.get(w.focused_widget?) {
+            Some(Widget::TextInput(t)) => Some(t.value.clone()),
+            _ => None,
+        }
     }
 
     // -- taskbar -----------------------------------------------------------
@@ -623,7 +708,13 @@ impl WindowManager {
             // drag, move a window, or emit a `WidgetAction`.
             if self.taskbar_rect().contains(cx, cy) {
                 if let Some(id) = self.taskbar_click(cx, cy) {
-                    self.focus(id);
+                    // Focus *and* arm the window's first text field: the
+                    // taskbar button is the mouse twin of the Ctrl+1/2/3
+                    // hotkey, so both paths must end in the same state
+                    // (focused window + live caret) or one of them hands
+                    // the user a focused window that silently eats every
+                    // printable — see `focus_and_type` for that bug.
+                    self.focus_and_type(id);
                 }
             } else if let Some(idx) = self.window_index_at(cx, cy) {
                 // Snapshot decisions *before* focus() re-sorts the vec.
@@ -895,10 +986,10 @@ impl WindowManager {
 
 /// Font scale for the hint bar's text (1 => 8 px cells).
 ///
-/// The message is one 82-char line, so at scale 1
-/// [`Graphics::text_width`] reports 82 × 8 = **656 px** — well inside the
-/// 1024 px framebuffer (184 px of margin on each side). Scale 2 would be
-/// 82 × 16 = **1312 px > 1024**, i.e. it would run off the right edge;
+/// The message is one 119-char line, so at scale 1
+/// [`Graphics::text_width`] reports 119 × 8 = **952 px** — inside the
+/// 1024 px framebuffer (36 px of margin on each side). Scale 2 would be
+/// 119 × 16 = **1904 px > 1024**, i.e. it would run off the right edge;
 /// scale 1 is therefore the largest integer scale that fits (see
 /// [`HINT_LINES`]).
 const HINT_SCALE: u32 = 1;
@@ -907,12 +998,23 @@ const HINT_PAD: i32 = 6;
 /// The message: a single centered line (the old two-line version overflowed
 /// the 1024 px framebuffer).
 ///
-/// ASCII-only, 82 chars → 82 × 8 = **656 px** at [`HINT_SCALE`], so it
-/// centers with ~184 px to spare on each side. The draw code still clamps
+/// ASCII-only, 119 chars → 119 × 8 = **952 px** at [`HINT_SCALE`], so it
+/// centers with 36 px to spare on each side. The draw code still clamps
 /// `x ≥ 0` and every primitive clips, so a narrower screen degrades by
 /// trimming the right edge rather than wrapping or panicking.
-const HINT_LINES: [&str; 1] =
-    ["Click here to capture input | Right Ctrl = release | Arrows = move | Space = click"];
+///
+/// The copy describes what *actually works today*: the keyboard cursor
+/// fallback (`main.rs` Key arm — arrows move, Space/Enter click, Esc
+/// closes, Ctrl+1/2/3 switches apps) plus VirtualBox's own capture
+/// controls (click to capture, Right Ctrl to release). The PS/2 mouse
+/// itself may or may not be delivering packets on a given boot — see
+/// `[ps2    ] mouse irq count` on serial — so the bar deliberately
+/// promises only the input paths that cannot be dead: nothing here
+/// depends on IRQ12, while every key it names is proven by the
+/// keyboard's own climbing `kb irq count`.
+const HINT_LINES: [&str; 1] = [
+    "Click here to capture input | Right Ctrl = release | Arrows = move | Space/Enter = click | Esc = close | Ctrl+1/2/3 = apps",
+];
 /// One text line's height in pixels at [`HINT_SCALE`] (8 × 1 = 8 px).
 const HINT_LINE_H: i32 = crate::graphics::font::GLYPH_H as i32 * HINT_SCALE as i32;
 /// Total bar height: padding + exactly one line (6 + 8 + 6) = **20 px**

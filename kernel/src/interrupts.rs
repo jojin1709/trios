@@ -8,8 +8,21 @@
 //!   * `40`    — IRQ8 (RTC), masked until a later phase;
 //!   * `44`    — IRQ12 (PS/2 mouse, through the slave PIC), Phase 3.
 //!
-//! Phase 1 unmasks only the timer line. Phase 3's [`crate::input::init`]
-//! unmask IRQ1 + IRQ12 via [`unmask_input`] once both devices answer.
+//! Phase 1 unmasks only the timer line: [`init_pic`] writes master `0xFE`
+//! (`1111_1110`, bit0 clear = IRQ0 enabled) and slave `0xFF` (all eight
+//! slave lines masked, cascade included — harmless there, the slave has
+//! nothing to forward yet). Phase 3's [`crate::input::init`] unmasks both
+//! input lines, IRQ1 and IRQ12, via [`unmask_input`] once both devices
+//! answer — and *that* write must clear master **bit2** too: IRQ12 lives
+//! on the slave PIC and every slave interrupt reaches the CPU *through*
+//! master IRQ2, so a master mask with bit2 set starves the mouse no
+//! matter what the slave mask says (the `0xFC` arithmetic bug, fixed and
+//! documented on [`unmask_input`]).
+//!
+//! Every mask write is followed by [`log_masks`], which reads the OCW1
+//! registers back off ports `0x21`/`0xA1` and prints the *hardware's*
+//! answer — see there for why echoing the intended value would have hid
+//! this exact bug.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,6 +30,7 @@ use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::{
+    instructions::port::Port,
     registers::control::Cr2,
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
@@ -84,43 +98,121 @@ pub fn init_idt() {
 }
 
 /// Remaps both PICs above the exception range and unmasks IRQ0 only.
+///
+/// The masks written here are read back and logged by [`log_masks`]
+/// immediately afterwards, so the serial log opens with the phase-1
+/// baseline (`master=0xFE slave=0xFF`) the Phase 3 [`unmask_input`]
+/// line can then be compared against.
 pub fn init_pic() {
     // SAFETY: this kernel exclusively owns the PICs; `initialize` only
     // writes their command/data ports to set the vector offsets (32/40).
     unsafe { PICS.lock().initialize() };
-    // SAFETY: writing interrupt masks is safe at any time. 0xFE unmasks IRQ0
-    // on the master (bit clear = enabled); 0xFF masks every slave line —
-    // keyboard IRQ1 stays masked until Phase 3.
+    // SAFETY: writing interrupt masks is safe at any time. 0xFE =
+    // 1111_1110 unmasks IRQ0 on the master (bit clear = enabled); 0xFF
+    // masks every slave line — keyboard IRQ1 stays masked until Phase 3.
+    // (Bit2 — the cascade — is set here, i.e. masked: that's fine at this
+    // stage because the slave is fully masked too, so it never raises one.
+    // `unmask_input` is what has to clear it.)
     unsafe { PICS.lock().write_masks(0xFE, 0xFF) };
+    // Phase-1 baseline, read back from the hardware rather than echoed —
+    // see `log_masks` for why that distinction is the whole point.
+    log_masks("init_pic phase-1");
 }
 
 /// Unmasks the PS/2 input lines (Phase 3): IRQ1 (keyboard, master input 1)
 /// and IRQ12 (mouse, slave input 4). Timer IRQ0 stays unmasked; everything
 /// else stays masked.
 ///
+/// The master mask is `0xF8` = `1111_1000`:
+///
+/// * bit0 clear — IRQ0 (PIT timer) stays enabled, as in phase 1;
+/// * bit1 clear — IRQ1 (keyboard, master input 1) enabled;
+/// * **bit2 clear — IRQ2, the slave PIC's *cascade* line, enabled**;
+/// * bits3..7 set — IRQ3..IRQ7 stay masked (COM ports, LPT, floppy, IDE).
+///
+/// The slave mask is `0xEF` = `1110_1111`: only bit4 clear — IRQ12 (mouse)
+/// enabled, IRQ8/9/10/11/13/14/15 masked.
+///
+/// The cascade bit is the entire reason this value is what it is. Every
+/// slave interrupt — IRQ12 included — reaches the CPU *through* master
+/// IRQ2; with bit2 set on the master mask the slave PIC is unreachable
+/// however permissive its own mask is, so `mouse irq count` stays `0`
+/// forever while the machine otherwise looks perfectly healthy. **Keyboard
+/// activity proves nothing about the cascade**: IRQ1 lives on the master
+/// PIC and never crosses it, so a working keyboard alongside a dead mouse
+/// is exactly the symptom a masked IRQ2 produces (observed in both
+/// VirtualBox and QEMU).
+///
+/// This is also why the old value was wrong in a way that read as right:
+/// `0xFC` = `1111_1100` clears bit0 and bit1 (timer + keyboard — both
+/// demonstrably work) but leaves **bit2 set**, and the "obvious"
+/// alternative `0xFD` = `1111_1101` leaves bit2 set *too*. Both of the
+/// plausible-looking candidates mask the cascade; only `0xF8` clears it.
+/// The neighbouring values agreeing on the one bit that mattered is
+/// precisely the trap that shipped a mouse which never fired an IRQ.
+///
 /// Called by [`crate::input::init`] only after both devices have been
 /// initialised *and* their IDT handlers registered — an unmasked line
-/// with no handler would triple-fault.
-/// Unmasks the PS/2 input lines (Phase 3): IRQ1 (keyboard, master input 1)
-/// and IRQ12 (mouse, slave input 4). Timer IRQ0 stays unmasked; everything
-/// else stays masked.
-///
-/// The master mask is `0xFC`, **not** `0xFD`: bit2 is the slave PIC's
-/// *cascade* line (IRQ2), and no slave interrupt — IRQ12 included — can
-/// reach the CPU with it masked. Worse, on VirtualBox a slave request that
-/// can never be serviced leaves the cascade permanently asserted and
-/// wedges PIC delivery entirely (IRQ0 stops firing too — caught by the
-/// post-`sti` tick-test panic during bring-up).
-///
-/// Called by [`crate::input::init`] only after both devices have been
-/// initialised *and* their IDT handlers registered — an unmasked line
-/// with no handler would triple-fault.
+/// with no handler would triple-fault. The caller logs the masks back
+/// from the hardware via [`log_masks`] right after this returns
+/// (expected: `master=0xF8 slave=0xEF`).
 pub fn unmask_input() {
-    // Master 0xFC = IRQ0 (timer) + IRQ1 (keyboard) + IRQ2 (cascade);
-    // slave 0xEF = only IRQ12 (mouse) unmasked.
+    // Master 0xF8 = 1111_1000: IRQ0 (timer) + IRQ1 (keyboard) + IRQ2
+    // (cascade) unmasked; IRQ3..7 still masked. The bit2 clear is the
+    // fix — without it no slave IRQ, IRQ12 included, can reach the CPU.
+    // Slave 0xEF = 1110_1111: only IRQ12 (mouse) unmasked.
     // SAFETY: same ownership as `init_pic`; pure mask write, no side
     // effects beyond (de)livering already-pending requests.
-    unsafe { PICS.lock().write_masks(0xFC, 0xEF) };
+    unsafe { PICS.lock().write_masks(0xF8, 0xEF) };
+}
+
+/// Reads both PIC mask registers back **off the hardware** and logs them
+/// as one greppable line:
+///
+/// ```text
+/// [pic    ] masks master=0xF8 slave=0xEF (input::init phase-3)
+/// ```
+///
+/// Uppercase, zero-padded hex; `context` names the call site so the two
+/// boot-time readings stay tellable apart — `init_pic phase-1` must show
+/// `master=0xFE slave=0xFF` (IRQ0 only), `input::init phase-3` must show
+/// `master=0xF8 slave=0xEF` (cascade open, IRQ12 open). Anything else in
+/// those positions names the exact bit that is wrong.
+///
+/// **Why read back instead of printing what we wrote**: the bug this
+/// diagnostic was added for was a mask whose *arithmetic* was wrong while
+/// the code's intent (per its comment) was right — a log line echoing the
+/// argument it was about to write would have printed `0xFC` and looked
+/// convincing forever. [`ChainedPics::initialize`] also rewrites the masks
+/// at the end (it restores whatever it saved on entry), so intended and
+/// actual values can diverge without a read-back ever noticing. This
+/// prints what the chips are really running.
+///
+/// The read is a plain OCW1 fetch from the data ports — master `0x21`,
+/// slave `0xA1`, the same two reads `ChainedPics::read_masks` performs.
+/// Reading the 8259's data port returns the currently-programmed OCW1
+/// (interrupt mask) register and has **no side effects**: no command is
+/// latched, no interrupt is acknowledged or disturbed, nothing to
+/// synchronise against. Deliberately done with raw [`Port`]s rather than
+/// `PICS.lock()`, so the diagnostic can never deadlock against a context
+/// that already holds the PIC mutex.
+pub fn log_masks(context: &str) {
+    /// Master PIC data port — reads return OCW1 (IRQ0..IRQ7 mask).
+    const MASTER_DATA: u16 = 0x21;
+    /// Slave PIC data port — reads return OCW1 (IRQ8..IRQ15 mask).
+    const SLAVE_DATA: u16 = 0xA1;
+
+    // SAFETY: ring 0 with I/O privilege; `0x21`/`0xA1` are the standard
+    // 8259 data-port addresses and a *read* only returns the OCW1 mask
+    // register (documented above — no side effects), so this cannot
+    // disturb PIC state or pending interrupts.
+    let (master, slave) = unsafe {
+        (
+            Port::<u8>::new(MASTER_DATA).read(),
+            Port::<u8>::new(SLAVE_DATA).read(),
+        )
+    };
+    serial_println!("[pic    ] masks master=0x{master:02X} slave=0x{slave:02X} ({context})");
 }
 
 // ---------------------------- CPU exceptions -----------------------------
@@ -165,6 +257,9 @@ extern "x86-interrupt" fn general_protection_fault_handler(
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     timer::increment();
+
+    // Phase 5: update sleeping threads on timer tick
+    crate::sched::timer_tick(timer::ticks());
 
     // Phase 3: publish the tick to the event queue so the desktop loop
     // can drive animations/heartbeat off `Event::Tick` instead of

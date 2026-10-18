@@ -18,7 +18,7 @@ use x86_64::{
 /// IST index (0-based; architectural IST1) wired to double faults.
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 
-/// Double-fault stack size: 40 KiB (five pages) — enough for a deep fault
+/// Double-fault stack size: 20 KiB (five 4 KiB pages) — enough for a deep fault
 /// log even if the faulting stack was garbage.
 pub const DOUBLE_FAULT_STACK_SIZE: usize = 5 * 4096;
 
@@ -35,11 +35,24 @@ pub fn double_fault_stack_top() -> u64 {
     base + DOUBLE_FAULT_STACK_SIZE as u64
 }
 
+/// Kernel privilege stack size for Ring 3 interrupts/syscalls (20 KiB).
+pub const KERNEL_RSP0_STACK_SIZE: usize = 5 * 4096;
+
+/// Dedicated kernel privilege stack (RSP0).
+static mut KERNEL_RSP0_STACK: [u8; KERNEL_RSP0_STACK_SIZE] = [0; KERNEL_RSP0_STACK_SIZE];
+
+pub fn kernel_rsp0_stack_top() -> u64 {
+    let base = core::ptr::addr_of!(KERNEL_RSP0_STACK) as u64;
+    base + KERNEL_RSP0_STACK_SIZE as u64
+}
+
 lazy_static::lazy_static! {
     static ref TSS: TaskStateSegment = {
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
             VirtAddr::new(double_fault_stack_top());
+        // RSP0: automatically loaded by CPU when an interrupt arrives while in Ring 3
+        tss.privilege_stack_table[0] = VirtAddr::new(kernel_rsp0_stack_top());
         tss
     };
 }
@@ -47,18 +60,39 @@ lazy_static::lazy_static! {
 lazy_static::lazy_static! {
     static ref GDT: (GlobalDescriptorTable, Selectors) = {
         let mut gdt = GlobalDescriptorTable::new();
-        let code = gdt.append(Descriptor::kernel_code_segment());
-        let data = gdt.append(Descriptor::kernel_data_segment());
+        let kernel_code = gdt.append(Descriptor::kernel_code_segment());
+        let kernel_data = gdt.append(Descriptor::kernel_data_segment());
+        // For sysret compatibility in x86_64:
+        // user_data followed by user_code
+        let user_data = gdt.append(Descriptor::user_data_segment());
+        let user_code = gdt.append(Descriptor::user_code_segment());
         let tss = gdt.append(Descriptor::tss_segment(&TSS));
-        (gdt, Selectors { code, data, tss })
+        (gdt, Selectors { kernel_code, kernel_data, user_code, user_data, tss })
     };
 }
 
 /// Selectors produced when the GDT was built.
-struct Selectors {
-    code: SegmentSelector,
-    data: SegmentSelector,
-    tss: SegmentSelector,
+pub struct Selectors {
+    pub kernel_code: SegmentSelector,
+    pub kernel_data: SegmentSelector,
+    #[allow(dead_code)]
+    pub user_code: SegmentSelector,
+    pub user_data: SegmentSelector,
+    pub tss: SegmentSelector,
+}
+
+/// Returns the active GDT segment selectors.
+pub fn selectors() -> &'static Selectors {
+    &GDT.1
+}
+
+/// Updates the TSS RSP0 privilege stack pointer for Ring 3 -> Ring 0 transitions.
+#[allow(dead_code)]
+pub fn set_privilege_stack(stack_top: VirtAddr) {
+    let tss_ptr = &*TSS as *const TaskStateSegment as *mut TaskStateSegment;
+    unsafe {
+        (*tss_ptr).privilege_stack_table[0] = stack_top;
+    }
 }
 
 /// Loads the GDT, refreshes every segment register from it, loads the TSS.
@@ -73,10 +107,10 @@ pub fn init() {
         // code (`CS`) and ring-0 DPL-0 data (`DS`/`ES`/`SS`) are legal for a
         // ring-0 task; reloading them discards whatever stale indices the
         // bootloader's GDT left behind.
-        CS::set_reg(selectors.code);
-        DS::set_reg(selectors.data);
-        ES::set_reg(selectors.data);
-        SS::set_reg(selectors.data);
+        CS::set_reg(selectors.kernel_code);
+        DS::set_reg(selectors.kernel_data);
+        ES::set_reg(selectors.kernel_data);
+        SS::set_reg(selectors.kernel_data);
         // SAFETY: the selector addresses the TSS descriptor in the GDT we
         // just loaded; from now on the CPU may consult its IST stacks.
         load_tss(selectors.tss);

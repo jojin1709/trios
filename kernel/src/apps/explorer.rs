@@ -200,27 +200,26 @@ impl Explorer {
         }
         match event.code {
             KeyCode::ArrowUp => {
-                let entries = fs.list(&self.cwd);
-                let Some(name) = entries.get(self.selected) else {
-                    return false;
-                };
                 if self.selected == 0 {
                     return false;
                 }
-                let name = name.name.clone();
+                let entries = fs.list(&self.cwd);
                 self.selected -= 1;
-                serial_println!("[apps  ] explorer select: {name}");
+                if let Some(entry) = entries.get(self.selected) {
+                    serial_println!("[apps  ] explorer select: {}", entry.name);
+                }
                 self.paint(wm, fs);
                 true
             }
             KeyCode::ArrowDown => {
                 let entries = fs.list(&self.cwd);
-                let Some(name) = entries.get(self.selected + 1) else {
+                if self.selected + 1 >= entries.len() {
                     return false;
-                };
-                let name = name.name.clone();
+                }
                 self.selected += 1;
-                serial_println!("[apps  ] explorer select: {name}");
+                if let Some(entry) = entries.get(self.selected) {
+                    serial_println!("[apps  ] explorer select: {}", entry.name);
+                }
                 self.paint(wm, fs);
                 true
             }
@@ -241,6 +240,13 @@ impl Explorer {
             }
             // While the filename prompt owns the keyboard, Backspace must
             // delete text — not yank the view up a directory mid-word.
+            // This guard is also what makes `WindowManager::focus_and_type`
+            // safe to arm that prompt on Ctrl+1/taskbar focus: `main.rs`
+            // runs `apps.on_key` *before* `wm.handle_key`, so the guard
+            // always sees the current armed state and exactly one
+            // Backspace meaning fires per press — armed => the caret
+            // (this arm falls through, `TextInput::handle_key` deletes),
+            // unarmed => `go_up` below, with no field to double-fire into.
             KeyCode::Backspace if !wm.has_text_focus() => self.go_up(wm, fs),
             _ => false,
         }

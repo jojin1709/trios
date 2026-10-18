@@ -15,15 +15,15 @@
 //! byte 2:  Y movement, two's complement (i8), +Y = *up* on the wire
 //! ```
 //!
-//! ### Sync recovery (why bit 3 matters)
+//! ### Sync recovery
 //!
-//! If we ever start reading mid-packet (a byte lost, an IRQ coalesced),
-//! every subsequent byte shifts and the cursor would drift diagonally
-//! forever — the classic broken-mouse bug. The always-1 sync bit fixes it:
-//! byte 0 of a packet always has bit3 set, bytes 1/2 virtually never do.
-//! So: at the start of a packet, ignore bytes until bit3 is set; if bit3
-//! *is* set while we're mid-packet, the previous packet lost a byte —
-//! restart at this byte. Self-synchronising, one `if` per byte.
+//! Byte 0 of a standard PS/2 mouse packet has bit 3 always set to 1.
+//! Bytes 1 and 2 carry two's-complement movement deltas (dx, dy), which
+//! legitimately have bit 3 set whenever the delta is negative or has
+//! magnitude >= 8. Therefore, bit 3 is only tested when framing byte 0.
+//! Inter-byte timeout (>30 ms via PIT ticks) and sign-bit validation
+//! (bits 4/5 of byte 0 matching the sign of dx/dy) ensure robust framing
+//! recovery without corrupting valid movement.
 //!
 //! ### Axis flip
 //!
@@ -40,13 +40,13 @@
 //! `gui::wm`). Both advance by the same deltas, so they agree once the
 //! queue is drained.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, Ordering};
 
 use spin::Mutex;
 
 use super::{
-    SPIN_LIMIT, drain_output, read_data, wait_ack, wait_byte, wait_input_empty, write_cmd,
-    write_data,
+    CommandLog, RAW_RING_LEN, RawRing, SPIN_LIMIT, drain_output, read_data, wait_ack, wait_byte,
+    wait_input_empty, write_cmd, write_data,
 };
 use crate::event::{Event, MouseButtons, MouseEvent, push as push_event};
 
@@ -67,6 +67,24 @@ static CURSOR_Y: AtomicI32 = AtomicI32::new(0);
 /// issue); if it climbs but the cursor doesn't move, it's a decode bug.
 static IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// Status register (`0x64`) latched at the moment the last IRQ12
+/// arrived: bit0 = output buffer full (should be set — the IRQ means a
+/// byte is waiting), bit5 = aux source (must be *set* for mouse bytes —
+/// the handler refuses to decode a clear one), bit6 = device timeout,
+/// bit7 = parity error. Pure instrumentation (a status read has no side
+/// effects). Printed as `[ps2    ] mouse status @irq = 0x{status:02x}`:
+/// a *climbing* `mouse irq count` with a status that never shows bit5
+/// set would mean the controller is routing keyboard bytes onto IRQ12.
+static LAST_STATUS: AtomicU8 = AtomicU8::new(0);
+
+/// Last [`RAW_RING_LEN`] bytes delivered on IRQ12, captured before the
+/// aux-bit check and the decoder run (see [`super::RawRing`]). Printed
+/// as `[ps2    ] mouse raw: {b0:02x} {b1:02x} {b2:02x} ...` — in the
+/// VirtualBox bug under investigation this line is all zeros with a
+/// flat `mouse irq count`, which together mean "the host queued motion
+/// the guest device never delivered", *not* a decode failure.
+static RAW: RawRing = RawRing::new();
+
 /// Reassembly state for the 3-byte stream. Only the IRQ12 handler
 /// touches it (interrupts don't nest), so a spin lock is never contended
 /// — but it keeps the mutable state safe Rust instead of `static mut`.
@@ -77,6 +95,8 @@ struct PacketState {
     /// Last reported button state (packets only carry changes faithfully
     /// every time — we mirror them so `MouseEvent` can carry full state).
     buttons: MouseButtons,
+    /// PIT tick count when the last byte arrived, for framing timeout.
+    last_tick: u64,
 }
 
 impl PacketState {
@@ -89,6 +109,7 @@ impl PacketState {
                 right: false,
                 middle: false,
             },
+            last_tick: 0,
         }
     }
 }
@@ -118,23 +139,36 @@ static PACKET: Mutex<PacketState> = Mutex::new(PacketState::new());
 ///
 /// A `0xFE` (Resend) answer to any step is retried a few times — real
 /// and emulated mice occasionally drop the first command after reset.
+///
+/// Observability: every response byte is reported on serial by
+/// [`CommandLog`] — `[ps2    ] mouse <- 0xFF: FA AA 00` for the reset
+/// exchange, `[ps2    ] mouse <- 0xF6: FA`, `[ps2    ] mouse <- 0xF4:
+/// FA` — and a dead device prints `[ps2    ] mouse <- 0xFF: TIMEOUT
+/// after N spins` instead of silently producing nothing. That matters
+/// because this function has *always* returned `Ok` in VirtualBox while
+/// the guest mouse still never moved: the handshake was the one place
+/// nobody could see.
 pub fn init() -> Result<(), &'static str> {
     drain_output();
 
     // 1. Reset + self-test. `wait_byte` consumes every response byte in
     //    order: 0xFA (ACK), 0xAA (self-test pass). The trailing device
-    //    ID byte (0x00) is swallowed by the first subsequent command's
-    //    ACK wait — it isn't an error, and the packet decoder never
-    //    sees it because IRQ12 is still masked (super::init unmasks
-    //    only after this function returns).
+    //    ID byte (0x00) is swallowed here on purpose (it isn't an error
+    //    if it never arrives — not every emulator sends it, hence the
+    //    ignored `Err` below), and the packet decoder never sees it
+    //    because IRQ12 is still masked (super::init unmasks only after
+    //    this function returns). One `log` spans all three waits so the
+    //    serial log gets the single line
+    //    `[ps2    ] mouse <- 0xFF: FA AA 00`.
+    let mut log = CommandLog::new("mouse", 0xFF);
     let mut attempts = 0u32;
     loop {
         attempts += 1;
-        wait_input_empty()?;
+        wait_input_empty("mouse reset (cmd 0xD4 0xFF)")?;
         write_cmd(0xD4);
-        wait_input_empty()?;
+        wait_input_empty("mouse reset (cmd 0xD4 0xFF)")?;
         write_data(0xFF);
-        match wait_ack() {
+        match wait_ack(&mut log) {
             Ok(0xFA) => break,
             Ok(0xFE) if attempts < 3 => continue, // resend requested
             Ok(other) => {
@@ -148,24 +182,36 @@ pub fn init() -> Result<(), &'static str> {
         }
     }
     // Self-test "Bat Good" — bounded wait, must follow the reset ACK.
-    wait_byte(0xAA, SPIN_LIMIT)?;
+    wait_byte(&mut log, 0xAA, SPIN_LIMIT)?;
     // Device ID byte (0x00): present on real mice and VirtualBox, but
-    // not guaranteed by every emulator — ignore a timeout.
-    let _ = wait_byte(0x00, SPIN_LIMIT >> 4);
+    // not guaranteed by every emulator — ignore a timeout. If it does
+    // time out, `wait_byte` has already printed the command's TIMEOUT
+    // line (with `saw FA AA`), so the `flush` below becomes a no-op.
+    let _ = wait_byte(&mut log, 0x00, SPIN_LIMIT >> 4);
+    log.flush();
 
-    // 2. Defaults.
-    wait_input_empty()?;
+    // 2. Defaults. Reported as `[ps2    ] mouse <- 0xF6: FA`. A late
+    //    device-ID byte that missed the wait above shows up *here*,
+    //    logged as `mouse <- 0xF6: 00 FA` — the visibility this whole
+    //    instrumentation pass is for.
+    let mut log = CommandLog::new("mouse", 0xF6);
+    wait_input_empty("mouse defaults (cmd 0xD4 0xF6)")?;
     write_cmd(0xD4);
-    wait_input_empty()?;
+    wait_input_empty("mouse defaults (cmd 0xD4 0xF6)")?;
     write_data(0xF6);
-    wait_ack()?;
+    wait_ack(&mut log)?;
+    log.flush();
 
-    // 3. Go live.
-    wait_input_empty()?;
+    // 3. Go live. Reported as `[ps2    ] mouse <- 0xF4: FA`. From here
+    //    on every movement should produce an IRQ12 per 3-byte packet
+    //    (`[ps2    ] mouse irq count = ..` in the 1 Hz heartbeat).
+    let mut log = CommandLog::new("mouse", 0xF4);
+    wait_input_empty("mouse data report (cmd 0xD4 0xF4)")?;
     write_cmd(0xD4);
-    wait_input_empty()?;
+    wait_input_empty("mouse data report (cmd 0xD4 0xF4)")?;
     write_data(0xF4);
-    wait_ack()?;
+    wait_ack(&mut log)?;
+    log.flush();
     Ok(())
 }
 
@@ -174,6 +220,19 @@ pub fn init() -> Result<(), &'static str> {
 /// distinguishes "VirtualBox sent nothing" from "we failed to decode".
 pub fn irq_count() -> u32 {
     IRQ_COUNT.load(Ordering::Relaxed)
+}
+
+/// Status byte (`0x64`) as observed at the most recent IRQ12 (see
+/// [`LAST_STATUS`]). Printed as `[ps2    ] mouse status @irq = 0x{b:02x}`.
+pub fn status_at_irq() -> u8 {
+    LAST_STATUS.load(Ordering::Relaxed)
+}
+
+/// Oldest-to-newest snapshot of the last [`RAW_RING_LEN`] IRQ12 bytes
+/// (see [`RAW`]). Printed as `[ps2    ] mouse raw: {b0:02x} ...` — the
+/// most recent byte is always the last one on the line.
+pub fn raw_bytes() -> [u8; RAW_RING_LEN] {
+    RAW.snapshot()
 }
 
 /// Sets the screen bounds and parks the cursor in the centre (called
@@ -230,7 +289,15 @@ pub fn handle_irq() {
     // be read out of 0x60 (otherwise the controller re-raises the IRQ
     // forever); we just refuse to feed it to the decoder.
     let status = super::read_status();
+    // Latch the status for the heartbeat *before* the guard can return:
+    // `[ps2    ] mouse status @irq = 0x{b:02x}` must show what the
+    // hardware said even for bytes the decoder rejects (instrumentation
+    // only — the status read above is reused, nothing new is read).
+    LAST_STATUS.store(status, Ordering::Relaxed);
     let byte = read_data();
+    // Capture raw before the aux check, so rejected bytes are visible
+    // too: `[ps2    ] mouse raw: ..` is the unfiltered IRQ12 stream.
+    RAW.push(byte);
     if status & 0b0010_0000 == 0 {
         // One-time log: expected count is 0 for the lifetime of a
         // healthy system, so even a single occurrence is worth seeing —
@@ -246,15 +313,16 @@ pub fn handle_irq() {
     let mut state = PACKET.lock();
 
     // -- packet synchronisation (see module docs) -------------------------
-    let sync = byte & 0b1000 != 0;
-    if state.idx == 0 {
-        if !sync {
-            return; // not a byte-0 candidate: garbage / bytes 1-2 of a lost packet
-        }
-    } else if sync {
-        // A start byte mid-packet: the earlier packet lost a byte.
-        // Restart from here instead of desyncing forever.
+    let now = crate::timer::ticks();
+    if now.wrapping_sub(state.last_tick) > 3 {
+        // If more than 30 ms elapsed since the previous byte, any in-flight
+        // partial packet was abandoned on the wire. Reset to expect byte 0.
         state.idx = 0;
+    }
+    state.last_tick = now;
+
+    if state.idx == 0 && byte & 0b1000 == 0 {
+        return; // not a byte-0 candidate: bit 3 must always be 1
     }
 
     let idx = state.idx; // copy first: indexing needs an immutable borrow
@@ -267,6 +335,20 @@ pub fn handle_irq() {
 
     // -- decode a complete packet ----------------------------------------
     let [b0, b1, b2] = state.bytes;
+    if b0 & 0b1000 == 0 {
+        return;
+    }
+
+    // Sign-bit validation: in standard PS/2 without overflow, bit 4 matches X sign (b1 >= 0x80)
+    // and bit 5 matches Y sign (b2 >= 0x80). If they conflict, framing is corrupt.
+    if b0 & 0b1100_0000 == 0 {
+        let x_sign = b0 & 0b0001_0000 != 0;
+        let y_sign = b0 & 0b0010_0000 != 0;
+        if x_sign != (b1 >= 0x80) || y_sign != (b2 >= 0x80) {
+            return;
+        }
+    }
+
     let old_buttons = state.buttons; // kept for the button-edge log below
     state.buttons = MouseButtons::from_mask(b0 & 0b111);
 
