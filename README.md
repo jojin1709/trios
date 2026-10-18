@@ -59,7 +59,7 @@ TriOS is a modern, bare-metal operating system built from the ground up in Rust 
 
 ## Architecture & Status
 
-TriOS has completed **Phase 0 through Phase 11**:
+TriOS has completed **Phase 0 through Phase 12**:
 
 | Phase | Milestone | Status | Key Subsystems |
 | :--- | :--- | :---: | :--- |
@@ -75,11 +75,13 @@ TriOS has completed **Phase 0 through Phase 11**:
 | **Phase 9** | Persistent Storage & FAT VFS | **Done** | GUID Partition Table (GPT) parser, AHCI DMA sector reading, FAT12/16/32 volume mounter, disk traversal (`gpt`, `fatls`, `disks`) |
 | **Phase 10** | Intel E1000 NIC & Network Stack | **Done** | Intel 82540EM MMIO driver, RX/TX DMA rings, Ethernet II framing, ARP cache/resolution, IPv4 dispatcher, ICMP Echo ping client (`ping`, `arp`, `netinfo`) |
 | **Phase 11** | UDP, DNS Resolver & CMOS RTC | **Done** | UDP datagram framing, RFC 1035 DNS client over port 53 (`dns <host>`), hardware CMOS RTC driver (`date`), live Taskbar clock widget |
+| **Phase 12** | ACPI Subsystem & Power Control | **Done** | RSDP/XSDT parser, FADT PM1a control, MADT CPU core counting, ACPI S5 shutdown (`poweroff`), hardware reboot (`reboot`), `acpi` inspection |
 
 ---
 
 ## Key Features
 
+- **ACPI Power Management & Hardware Reset**: Full ACPI table discovery (RSDP, XSDT, FADT, MADT, DSDT AML), CPU core detection, ACPI S5 poweroff (`poweroff`), and hardware reboot (`reboot`).
 - **UDP Protocol & RFC 1035 DNS Resolver**: User Datagram Protocol over IPv4 and domain name resolution querying DNS servers (`10.0.2.3:53`) to resolve Internet hosts into IP addresses (`dns example.com -> 104.20.23.154`).
 - **Hardware CMOS Real-Time Clock (RTC)**: Reads calendar date and time from motherboard I/O ports `0x70`/`0x71`, presenting a live wall clock in the desktop Taskbar and via terminal command `date`.
 - **Gigabit Ethernet & Network Protocol Stack**: Intel 82540EM (e1000) NIC driver with hardware DMA rings, full Ethernet II framing, dynamic ARP cache & reply engine, IPv4 packet handling, and ICMP Echo ping client/server.
@@ -88,7 +90,7 @@ TriOS has completed **Phase 0 through Phase 11**:
 - **Preemptive Kernel Multitasking**: Round-robin thread scheduler running background threads concurrently with the desktop GUI event loop.
 - **Interactive Window Manager**: Real-time window dragging, resizing via bottom-right grip, focus switching, and z-ordering.
 - **Built-in Shell Applications**:
-  - **Terminal**: Interactive CLI supporting commands (`help`, `uptime`, `clear`, `elfinfo`, `elfrun`, `disks`, `gpt`, `fatls`, `netinfo`, `arp`, `ping`, `date`, `dns`).
+  - **Terminal**: Interactive CLI supporting commands (`help`, `uptime`, `clear`, `elfinfo`, `elfrun`, `disks`, `gpt`, `fatls`, `netinfo`, `arp`, `ping`, `date`, `dns`, `acpi`, `poweroff`, `reboot`).
   - **Files Explorer**: Interactive directory browsing of the in-memory virtual filesystem.
   - **Text Editor**: Live text buffer editing with load and save integration into `ramfs`.
   - **Welcome & Playground**: Demo widgets showcasing buttons, click counters, sliders, and progress bars.

@@ -23,6 +23,7 @@
 #[macro_use]
 mod serial;
 
+mod acpi;
 mod allocator;
 mod apps;
 mod drivers;
@@ -98,6 +99,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     });
     serial_println!("[boot   ] direct map of physical memory at {phys_offset:#x}");
     memory::init_memory(phys_offset);
+
+    // Phase 12: ACPI Table Discovery & Power Management Subsystem
+    let rsdp_opt = match boot_info.rsdp_addr {
+        bootloader_api::info::Optional::Some(addr) => Some(addr),
+        bootloader_api::info::Optional::None => None,
+    };
+    acpi::init(rsdp_opt, phys_offset);
 
     // Take the bootloader's framebuffer handle out of the boot info now
     // (while we're borrowing `boot_info` for reads anyway). The actual

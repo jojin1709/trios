@@ -202,6 +202,9 @@ impl Terminal {
                 out.push(String::from("ping <ip> - send ICMP Echo Request"));
                 out.push(String::from("date - calendar date & time from RTC"));
                 out.push(String::from("dns <host> - resolve hostname via UDP"));
+                out.push(String::from("acpi - inspect ACPI tables & power config"));
+                out.push(String::from("poweroff - ACPI S5 shutdown computer"));
+                out.push(String::from("reboot - hardware restart computer"));
             }
             "ls" => {
                 let dir = if rest.is_empty() {
@@ -530,6 +533,31 @@ impl Terminal {
                         }
                     }
                 }
+            }
+            "acpi" => {
+                let guard = crate::acpi::ACPI.lock();
+                match guard.as_ref() {
+                    Some(info) => {
+                        out.push(format!("RSDP: {:#x}", info.rsdp_phys));
+                        out.push(format!(
+                            "OEM: {}{}{}{}{}{}",
+                            info.oem_id[0] as char, info.oem_id[1] as char, info.oem_id[2] as char,
+                            info.oem_id[3] as char, info.oem_id[4] as char, info.oem_id[5] as char
+                        ));
+                        out.push(format!("PM1a_CNT: {:#x} (FADT={})", info.pm1a_cnt, info.has_fadt));
+                        out.push(format!("CPU Cores (MADT): {}", info.cpu_cores));
+                        out.push(format!("S5 TypeA={:#x} TypeB={:#x}", info.slp_typa, info.slp_typb));
+                    }
+                    None => out.push(String::from("ACPI subsystem not initialized")),
+                }
+            }
+            "poweroff" | "shutdown" => {
+                out.push(String::from("shutting down system..."));
+                crate::acpi::poweroff();
+            }
+            "reboot" | "restart" => {
+                out.push(String::from("rebooting system..."));
+                crate::acpi::reboot();
             }
             "" => {}
             other => out.push(format!("unknown command: {other} - try 'help'")),
