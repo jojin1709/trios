@@ -78,11 +78,17 @@ TriOS has completed **Phase 0 through Phase 12**:
 | **Phase 10** | Intel E1000 NIC & Network Stack | **Done** | Intel 82540EM MMIO driver, RX/TX DMA rings, Ethernet II framing, ARP cache/resolution, IPv4 dispatcher, ICMP Echo ping client (`ping`, `arp`, `netinfo`) |
 | **Phase 11** | UDP, DNS Resolver & CMOS RTC | **Done** | UDP datagram framing, RFC 1035 DNS client over port 53 (`dns <host>`), hardware CMOS RTC driver (`date`), live Taskbar clock widget |
 | **Phase 12** | ACPI Subsystem & Power Control | **Done** | RSDP/XSDT parser, FADT PM1a control, MADT CPU core counting, ACPI S5 shutdown (`poweroff`), hardware reboot (`reboot`), `acpi` inspection |
+| **Phase 13** | TCP Protocol & HTTP/1.0 Client | **Done** | RFC 793 TCP state machine (SYN/ACK, seq/ack tracking), bare-metal HTTP/1.0 client (`curl <url>`) |
+| **Phase 14** | Desktop Web Browser Application | **Done** | GUI Browser app (`Ctrl+4`) with address bar, HTML tokenizer, formatted layout, and scrolling |
+| **Phase 15** | System Monitor & Task Manager | **Done** | Real-time CPU/RAM gauges, thread table, compositor FPS telemetry, and background worker spawning (`Ctrl+5`) |
+| **Phase 16** | Modern Desktop UI/UX & TriSweeper | **Done** | Desktop shortcut icons, modern taskbar with active indicators, window controls (`_`, `□`, `✕`), and TriSweeper puzzle game (`Ctrl+6`) |
 
 ---
 
 ## Key Features
 
+- **Desktop UI/UX Overhaul & Shortcut Icons (Phase 16)**: Modern desktop shell with 6 clickable desktop shortcut icons (`This PC`, `Files`, `Editor`, `Terminal`, `Browser`, `Mines`), refined Slate & Charcoal palette, 3D window elevation shadows, window controls (`_`, `□`, `✕` with red hover), and taskbar running indicator pills.
+- **TriSweeper Retro Desktop Game (Phase 16)**: Interactive 9x9 Minesweeper game (`Ctrl+6`) with 10 hidden mines, first-click protection, recursive zero-neighbor flood fill, HUD with live mine counter, timer, reset face button (`:-) / B-) / X-(`), and Dig/Flag modes.
 - **System Monitor & Task Manager (Phase 15)**: Graphical task manager displaying real-time CPU telemetry (core count, TSC frequency, uptime), physical memory & heap usage gauges with visual progress bar, compositor FPS & network telemetry, and live kernel thread table with interactive background task spawning (`Ctrl+5` or taskbar button).
 - **GUI Web Browser Application (Phase 14)**: Interactive desktop web browser window featuring a URL address bar, 'Go' button, Enter key navigation, HTML tag tokenizer and text formatting engine, and scrollable viewport with line counter footer, accessible via taskbar button or `Ctrl+4` hotkey.
 - **TCP Protocol Stack & HTTP/1.0 Web Client**: Full RFC 793 Transmission Control Protocol (pseudo-header checksums, 3-way handshake SYN/SYN-ACK/ACK, stream transmission, and FIN/ACK teardown) and bare-metal HTTP/1.0 client (`curl <url>`) resolving DNS and fetching live web pages directly over the Internet from within the bare-metal OS.
@@ -167,6 +173,7 @@ powershell -ExecutionPolicy Bypass -File .\run-virtualbox.ps1
 | **Ctrl + 3** | Focus and open **Terminal** |
 | **Ctrl + 4** | Focus and open **Web Browser** |
 | **Ctrl + 5** | Focus and open **System Monitor / Task Manager** |
+| **Ctrl + 6** | Focus and open **TriSweeper (Minesweeper Game)** |
 | **Esc** | Close currently focused window |
 | **Arrow Up / Down** | Navigate items in Files Explorer or scroll terminal / browser |
 

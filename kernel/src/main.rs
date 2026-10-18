@@ -528,9 +528,10 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
         apps.terminal.win,
         apps.browser.win,
         apps.sysmon.win,
+        apps.minesweeper.win,
     );
     apps.refresh(&mut wm, &ramfs);
-    serial_println!("[apps  ] shell ready: Files, Editor, Terminal, Browser, SysMon");
+    serial_println!("[apps  ] shell ready: Files, Editor, Terminal, Browser, SysMon, Mines");
 
     // Welcome starts focused (it was created first; re-assert so the
     // titlebar/border styling and Esc target are unambiguous).
@@ -757,6 +758,7 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
                                 KeyCode::Char('3') => Some((apps.terminal.win, "Terminal")),
                                 KeyCode::Char('4') => Some((apps.browser.win, "Browser")),
                                 KeyCode::Char('5') => Some((apps.sysmon.win, "SysMon")),
+                                KeyCode::Char('6') => Some((apps.minesweeper.win, "Mines")),
                                 _ => None,
                             };
                             if let Some((id, name)) = target {

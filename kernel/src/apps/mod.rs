@@ -42,6 +42,7 @@ pub mod explorer;
 pub mod terminal;
 pub mod browser;
 pub mod sysmon;
+pub mod minesweeper;
 
 use alloc::string::String;
 
@@ -50,17 +51,18 @@ pub use explorer::Explorer;
 pub use terminal::Terminal;
 pub use browser::Browser;
 pub use sysmon::SysMon;
+pub use minesweeper::Minesweeper;
 
 use crate::event::KeyEvent;
 use crate::fs::FileSystem;
 use crate::gui::{Theme, WidgetAction, WindowManager};
 
-/// The shell's five applications plus their window ids.
+/// The shell's six applications plus their window ids.
 ///
 /// Create once at boot with [`Apps::new`] — the windows exist from the
 /// first frame (the CI screenshots at 3/8/15/30 s prove it) rather than
 /// appearing on first click, which also means the taskbar buttons and
-/// the `Ctrl+1/2/3/4/5` hotkeys have something to focus immediately after
+/// the `Ctrl+1/2/3/4/5/6` hotkeys have something to focus immediately after
 /// `desktop_run` starts.
 pub struct Apps {
     /// The "Files" window: browse, select, create.
@@ -73,10 +75,12 @@ pub struct Apps {
     pub browser: Browser,
     /// The "SysMon" window: live system monitor & task manager.
     pub sysmon: SysMon,
+    /// The "Minesweeper" window: interactive retro desktop puzzle game.
+    pub minesweeper: Minesweeper,
 }
 
 impl Apps {
-    /// Builds all five app windows on `wm` (in that z-order) and
+    /// Builds all six app windows on `wm` (in that z-order) and
     /// returns the shell.
     pub fn new(wm: &mut WindowManager, theme: &Theme) -> Self {
         Self {
@@ -85,6 +89,7 @@ impl Apps {
             terminal: Terminal::new(wm, theme),
             browser: Browser::new(wm, theme),
             sysmon: SysMon::new(wm, theme),
+            minesweeper: Minesweeper::new(wm, theme),
         }
     }
 
@@ -110,6 +115,7 @@ impl Apps {
             || window_id == self.terminal.win
             || window_id == self.browser.win
             || window_id == self.sysmon.win
+            || window_id == self.minesweeper.win
     }
 
     /// Is one of the shell's windows the *focused* one? (Convenience
@@ -148,6 +154,9 @@ impl Apps {
         } else if action.window_id == self.sysmon.win {
             self.sysmon
                 .on_action(action.widget_index, action.outcome, wm)
+        } else if action.window_id == self.minesweeper.win {
+            self.minesweeper
+                .on_action(action.widget_index, action.outcome, wm)
         } else {
             false
         }
@@ -174,6 +183,8 @@ impl Apps {
             self.browser.on_key(event, wm)
         } else if window_id == self.sysmon.win {
             self.sysmon.on_key(event, wm)
+        } else if window_id == self.minesweeper.win {
+            self.minesweeper.on_key(event, wm)
         } else {
             false
         }
@@ -181,9 +192,11 @@ impl Apps {
 
     /// The 1 Hz heartbeat hook (`main.rs` folds it into its tick arm).
     ///
-    /// Updates live telemetry in the System Monitor.
+    /// Updates live telemetry in the System Monitor and Minesweeper timer.
     pub fn on_tick(&mut self, wm: &mut WindowManager) -> bool {
-        self.sysmon.on_tick(wm)
+        let sm = self.sysmon.on_tick(wm);
+        let ms = self.minesweeper.on_tick(wm);
+        sm || ms
     }
 }
 

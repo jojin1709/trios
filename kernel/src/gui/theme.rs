@@ -40,24 +40,33 @@ pub struct Theme {
     pub button_bg_pressed: Color,
     /// 1-px borders, window outlines, separators.
     pub border: Color,
+    /// Close button hover state (clean crimson).
+    pub close_hover: Color,
+    /// Taskbar background.
+    pub taskbar_bg: Color,
+    /// Active running app indicator accent.
+    pub taskbar_active: Color,
 }
 
 impl Theme {
     /// The default palette as `const fn` — usable in constant contexts.
     pub const fn new() -> Self {
         Self {
-            bg: Color::rgb(0x0D1117),
-            accent: Color::rgb(0x1F6FEB),
-            success: Color::rgb(0x3FB950),
-            text_primary: Color::rgb(0xE6EDF3),
-            text_secondary: Color::rgb(0x8B949E),
-            window_bg: Color::rgb(0x161B22),
-            titlebar_bg: Color::rgb(0x21262D),
-            titlebar_bg_focused: Color::rgb(0x1F6FEB),
-            button_bg: Color::rgb(0x21262D),
-            button_bg_hover: Color::rgb(0x30363D),
-            button_bg_pressed: Color::rgb(0x0D1117),
-            border: Color::rgb(0x30363D),
+            bg: Color::rgb(0x111520),
+            accent: Color::rgb(0x2563EB),
+            success: Color::rgb(0x16A34A),
+            text_primary: Color::rgb(0xF8FAFC),
+            text_secondary: Color::rgb(0x94A3B8),
+            window_bg: Color::rgb(0x1A1F2C),
+            titlebar_bg: Color::rgb(0x222838),
+            titlebar_bg_focused: Color::rgb(0x1E3A8A),
+            button_bg: Color::rgb(0x252D3E),
+            button_bg_hover: Color::rgb(0x323C52),
+            button_bg_pressed: Color::rgb(0x181E2A),
+            border: Color::rgb(0x333D52),
+            close_hover: Color::rgb(0xE11D48),
+            taskbar_bg: Color::rgb(0x151822),
+            taskbar_active: Color::rgb(0x3B82F6),
         }
     }
 }

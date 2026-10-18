@@ -238,6 +238,7 @@ struct TaskbarTargets {
     terminal: u64,
     browser: u64,
     sysmon: u64,
+    mines: u64,
 }
 
 /// The compositor + interaction state machine.
@@ -467,6 +468,15 @@ impl WindowManager {
         }
     }
 
+    /// Replaces a button's label text.
+    pub fn set_button_label(&mut self, window_id: u64, index: usize, label: String) {
+        if let Some(w) = self.window_mut(window_id)
+            && let Some(Widget::Button(b)) = w.widgets.get_mut(index)
+        {
+            b.label = label;
+        }
+    }
+
     /// Sets a progress bar's value (0.0..=1.0).
     pub fn set_progress(&mut self, window_id: u64, index: usize, value: f32) {
         if let Some(w) = self.window_mut(window_id)
@@ -592,13 +602,14 @@ impl WindowManager {
     /// [`taskbar_click`] answers `None`.
     ///
     /// [`taskbar_click`]: Self::taskbar_click
-    pub fn set_taskbar_targets(&mut self, files: u64, editor: u64, terminal: u64, browser: u64, sysmon: u64) {
+    pub fn set_taskbar_targets(&mut self, files: u64, editor: u64, terminal: u64, browser: u64, sysmon: u64, mines: u64) {
         self.taskbar_targets = Some(TaskbarTargets {
             files,
             editor,
             terminal,
             browser,
             sysmon,
+            mines,
         });
     }
 
@@ -610,6 +621,9 @@ impl WindowManager {
     /// nothing).
     pub fn taskbar_click(&self, x: i32, y: i32) -> Option<u64> {
         let targets = self.taskbar_targets?;
+        if taskbar_start_rect(self.screen_h).contains(x, y) {
+            return self.windows.iter().any(|w| w.id == targets.sysmon).then_some(targets.sysmon);
+        }
         let idx = taskbar_button_rects(self.screen_h)
             .iter()
             .position(|r| r.contains(x, y))?;
@@ -618,7 +632,24 @@ impl WindowManager {
             1 => targets.editor,
             2 => targets.terminal,
             3 => targets.browser,
-            _ => targets.sysmon,
+            4 => targets.sysmon,
+            _ => targets.mines,
+        };
+        self.windows.iter().any(|w| w.id == id).then_some(id)
+    }
+
+    /// Hit-tests desktop shortcut icons (when clicked on bare desktop).
+    pub fn desktop_icon_click(&self, x: i32, y: i32) -> Option<u64> {
+        let targets = self.taskbar_targets?;
+        let icons = desktop_icon_rects();
+        let idx = icons.iter().position(|r| r.contains(x, y))?;
+        let id = match idx {
+            0 => targets.sysmon,
+            1 => targets.files,
+            2 => targets.editor,
+            3 => targets.terminal,
+            4 => targets.browser,
+            _ => targets.mines,
         };
         self.windows.iter().any(|w| w.id == id).then_some(id)
     }
@@ -790,6 +821,8 @@ impl WindowManager {
                         }
                     }
                 }
+            } else if let Some(id) = self.desktop_icon_click(cx, cy) {
+                self.focus_and_type(id);
             }
         }
 
@@ -889,21 +922,96 @@ impl WindowManager {
     /// until then.
     pub fn compose(&self, g: &mut Graphics, theme: &Theme) {
         g.clear(theme.bg);
+        self.draw_desktop_icons(g, theme);
         for win in &self.windows {
-            Self::draw_window(g, theme, win);
+            Self::draw_window(g, theme, win, self.cursor);
         }
         draw_hint_bar(g, theme);
-        // Between the hint bar and the cursor: the taskbar is chrome like
-        // the hint bar (painted over the windows every frame), and the
-        // cursor stays the topmost thing on screen — see module docs.
-        draw_taskbar(g, theme);
+        self.draw_taskbar(g, theme);
         draw_cursor(g, self.cursor);
+    }
+
+    /// Draws the clickable desktop shortcut icons on the left side of the workspace.
+    fn draw_desktop_icons(&self, g: &mut Graphics, theme: &Theme) {
+        let icons = desktop_icon_rects();
+        let (cx, cy) = self.cursor;
+
+        for (i, (&label, r)) in DESKTOP_ICON_LABELS.iter().zip(icons.iter()).enumerate() {
+            let is_hover = r.contains(cx, cy);
+            if is_hover {
+                g.fill_rect(r.x, r.y, r.w as u32, r.h as u32, theme.button_bg);
+                g.draw_rect(r.x, r.y, r.w as u32, r.h as u32, theme.border);
+            }
+
+            let ix = r.x + (r.w - 24) / 2;
+            let iy = r.y + 6;
+
+            match i {
+                0 => {
+                    // This PC (Monitor)
+                    g.draw_rect(ix, iy, 24, 16, theme.text_primary);
+                    g.fill_rect(ix + 2, iy + 2, 20, 12, theme.accent);
+                    g.fill_rect(ix + 10, iy + 16, 4, 3, theme.text_secondary);
+                    g.fill_rect(ix + 6, iy + 19, 12, 2, theme.text_primary);
+                }
+                1 => {
+                    // Files (Folder)
+                    g.fill_rect(ix + 2, iy + 2, 8, 4, Color::rgb(0xF59E0B));
+                    g.fill_rect(ix + 2, iy + 5, 20, 15, Color::rgb(0xD97706));
+                    g.fill_rect(ix + 4, iy + 8, 18, 12, Color::rgb(0xFBBF24));
+                }
+                2 => {
+                    // Editor (Document)
+                    g.fill_rect(ix + 4, iy + 2, 16, 20, Color::rgb(0xF1F5F9));
+                    g.draw_rect(ix + 4, iy + 2, 16, 20, Color::rgb(0x94A3B8));
+                    g.fill_rect(ix + 7, iy + 6, 10, 2, Color::rgb(0x64748B));
+                    g.fill_rect(ix + 7, iy + 10, 10, 2, Color::rgb(0x64748B));
+                    g.fill_rect(ix + 7, iy + 14, 6, 2, Color::rgb(0x64748B));
+                }
+                3 => {
+                    // Terminal (Console)
+                    g.fill_rect(ix + 2, iy + 3, 20, 18, Color::rgb(0x0F172A));
+                    g.draw_rect(ix + 2, iy + 3, 20, 18, Color::rgb(0x475569));
+                    g.fill_rect(ix + 2, iy + 3, 20, 4, Color::rgb(0x1E293B));
+                    g.draw_text(ix + 5, iy + 8, ">", Color::rgb(0x22C55E), None, 1);
+                    g.fill_rect(ix + 12, iy + 14, 5, 2, Color::rgb(0x22C55E));
+                }
+                4 => {
+                    // Browser (Globe)
+                    g.draw_rect(ix + 4, iy + 4, 16, 16, Color::rgb(0x0284C7));
+                    g.fill_rect(ix + 6, iy + 6, 12, 12, Color::rgb(0x0369A1));
+                    g.draw_line(ix + 4, iy + 12, ix + 20, iy + 12, Color::rgb(0x38BDF8));
+                    g.draw_line(ix + 12, iy + 4, ix + 12, iy + 20, Color::rgb(0x38BDF8));
+                }
+                _ => {
+                    // Mines (Retro Mine)
+                    g.fill_rect(ix + 6, iy + 6, 12, 12, Color::rgb(0xE11D48));
+                    g.draw_rect(ix + 6, iy + 6, 12, 12, Color::rgb(0xF87171));
+                    g.draw_line(ix + 12, iy + 3, ix + 12, iy + 21, Color::rgb(0xF87171));
+                    g.draw_line(ix + 3, iy + 12, ix + 21, iy + 12, Color::rgb(0xF87171));
+                    g.fill_rect(ix + 10, iy + 10, 4, 4, Color::rgb(0xFFFFFF));
+                }
+            }
+
+            // Centered text with drop shadow
+            let tw = Graphics::text_width(label, 1);
+            let tx = r.x + (r.w - tw) / 2;
+            let ty = r.y + 36;
+            g.draw_text(tx + 1, ty + 1, label, Color::rgb(0x05080E), None, 1);
+            g.draw_text(tx, ty, label, theme.text_primary, None, 1);
+        }
     }
 
     /// Draws one window: body + titlebar, widgets, close box, grip,
     /// and finally the border (last, so it crisps every edge).
-    fn draw_window(g: &mut Graphics, theme: &Theme, win: &Window) {
+    fn draw_window(g: &mut Graphics, theme: &Theme, win: &Window, cursor: (i32, i32)) {
         let r = win.rect;
+
+        // Subtle 3D elevation shadow on right and bottom for focused windows
+        if win.focused {
+            g.fill_rect(r.x + 3, r.bottom(), r.w as u32, 2, Color::rgb(0x06080C));
+            g.fill_rect(r.right(), r.y + 3, 2, r.h as u32, Color::rgb(0x06080C));
+        }
 
         // Titlebar: accent when focused, muted otherwise — the at-a-glance
         // focus cue (spec: "darker if unfocused").
@@ -922,10 +1030,9 @@ impl WindowManager {
             theme.window_bg,
         );
 
-        // Title text, clipped so long titles stop before the close box
-        // (drawn glyph-by-glyph: no allocation per frame).
-        let title_limit = r.x + r.w - CLOSE_SIZE - 8;
-        let mut tx = r.x + 8;
+        // Title text, clipped so long titles stop before the window control buttons
+        let title_limit = r.x + r.w - (CLOSE_SIZE * 3 + 16);
+        let mut tx = r.x + 10;
         let ty = r.y + (TITLEBAR_H - 8) / 2;
         for ch in win.title.chars() {
             if tx + 8 > title_limit {
@@ -940,25 +1047,42 @@ impl WindowManager {
             wg.draw(g, r.x, r.y, theme);
         }
 
-        // Close box ("X").
+        // Window controls on the right: Minimize [—], Maximize [□], Close [✕]
         let c = win.close_rect();
         let (cx, cy) = (r.x + c.x, r.y + c.y);
-        g.fill_rect(cx, cy, c.w as u32, c.h as u32, theme.window_bg);
-        g.draw_rect(cx, cy, c.w as u32, c.h as u32, theme.border);
-        let inset = 5;
+        let is_close_hover = cursor.0 >= cx && cursor.0 < cx + c.w && cursor.1 >= cy && cursor.1 < cy + c.h;
+
+        // Minimize box
+        let min_x = cx - (CLOSE_SIZE + 2) * 2;
+        g.fill_rect(min_x, cy, c.w as u32, c.h as u32, titlebar);
+        g.draw_line(min_x + 4, cy + c.h - 5, min_x + c.w - 5, cy + c.h - 5, theme.text_secondary);
+
+        // Maximize box
+        let max_x = cx - (CLOSE_SIZE + 2);
+        g.fill_rect(max_x, cy, c.w as u32, c.h as u32, titlebar);
+        g.draw_rect(max_x + 3, cy + 3, (c.w - 6) as u32, (c.h - 6) as u32, theme.text_secondary);
+
+        // Close box ("X") with crimson hover
+        if is_close_hover {
+            g.fill_rect(cx, cy, c.w as u32, c.h as u32, theme.close_hover);
+        } else {
+            g.fill_rect(cx, cy, c.w as u32, c.h as u32, titlebar);
+        }
+        let inset = 4;
+        let x_color = if is_close_hover { Color::rgb(0xFFFFFF) } else { theme.text_primary };
         g.draw_line(
             cx + inset,
             cy + inset,
             cx + c.w - inset - 1,
             cy + c.h - inset - 1,
-            theme.text_primary,
+            x_color,
         );
         g.draw_line(
             cx + c.w - inset - 1,
             cy + inset,
             cx + inset,
             cy + c.h - inset - 1,
-            theme.text_primary,
+            x_color,
         );
 
         // Resize grip: two parallel diagonal ticks in the corner.
@@ -1009,7 +1133,7 @@ const HINT_PAD: i32 = 6;
 /// depends on IRQ12, while every key it names is proven by the
 /// keyboard's own climbing `kb irq count`.
 const HINT_LINES: [&str; 1] = [
-    "Click here to capture input | Right Ctrl = release | Arrows = move | Space/Enter = click | Esc = close | Ctrl+1..5 = apps",
+    "Click here to capture input | Right Ctrl = release | Arrows = move | Space/Enter = click | Esc = close | Ctrl+1..6 = apps",
 ];
 /// One text line's height in pixels at [`HINT_SCALE`] (8 × 1 = 8 px).
 const HINT_LINE_H: i32 = crate::graphics::font::GLYPH_H as i32 * HINT_SCALE as i32;
@@ -1088,33 +1212,50 @@ pub const TASKBAR_H: i32 = 28;
 /// uptime stamp keeps from the strip's right edge (8 px each side, so
 /// the strip frames its contents symmetrically).
 const TASKBAR_X0: i32 = 8;
-/// Button width: "Terminal" is the longest caption (8 chars × 8 px = 64
-/// px at scale 1), so 90 px leaves 13 px of padding on either side of
-/// the centered text.
-const TASKBAR_BTN_W: i32 = 90;
-/// Gap between buttons (the same 4 px separates the last button from
-/// whatever follows it).
+const TASKBAR_START_W: i32 = 74;
+const TASKBAR_BTN_X0: i32 = TASKBAR_X0 + TASKBAR_START_W + 6;
+const TASKBAR_BTN_W: i32 = 82;
 const TASKBAR_BTN_GAP: i32 = 4;
-/// Vertical padding between the strip's edges and its buttons: buttons
-/// are `TASKBAR_H - 2 × 6 = 16` px tall — an 8 px caption with 4 px
-/// above and below, which is also what leaves room for the strip's own
-/// 1 px top rule.
-const TASKBAR_PAD_Y: i32 = 6;
-/// Button height, **derived** from the padding so the two can't drift:
-/// shrink [`TASKBAR_PAD_Y`] and the buttons grow to match.
+const TASKBAR_PAD_Y: i32 = 4;
 const TASKBAR_BTN_H: i32 = TASKBAR_H - TASKBAR_PAD_Y * 2;
-/// Button captions, **in button order** (left to right). Index `i` here
-/// is the rect index [`taskbar_button_rects`] lays out *and* the index
-/// [`WindowManager::taskbar_click`] resolves against
-/// [`TaskbarTargets`]' same-ordered fields — one array defines the whole
-/// left-to-right contract.
-const TASKBAR_LABELS: [&str; 5] = ["Files", "Editor", "Terminal", "Browser", "SysMon"];
+const TASKBAR_LABELS: [&str; 6] = ["Files", "Editor", "Terminal", "Browser", "SysMon", "Mines"];
 
-/// The five button rects in **global** coordinates, left to right:
-fn taskbar_button_rects(screen_h: i32) -> [Rect; 5] {
+const DESKTOP_ICON_X: i32 = 18;
+const DESKTOP_ICON_Y0: i32 = 20;
+const DESKTOP_ICON_W: i32 = 64;
+const DESKTOP_ICON_H: i32 = 60;
+const DESKTOP_ICON_GAP: i32 = 14;
+
+const DESKTOP_ICON_LABELS: [&str; 6] = [
+    "This PC",
+    "Files",
+    "Editor",
+    "Terminal",
+    "Browser",
+    "Mines",
+];
+
+fn desktop_icon_rects() -> [Rect; 6] {
+    let mut rects = [Rect::new(0, 0, DESKTOP_ICON_W, DESKTOP_ICON_H); 6];
+    let mut y = DESKTOP_ICON_Y0;
+    for r in &mut rects {
+        r.x = DESKTOP_ICON_X;
+        r.y = y;
+        y += DESKTOP_ICON_H + DESKTOP_ICON_GAP;
+    }
+    rects
+}
+
+fn taskbar_start_rect(screen_h: i32) -> Rect {
     let y = screen_h - HINT_BAR_H - TASKBAR_H + TASKBAR_PAD_Y;
-    let mut x = TASKBAR_X0;
-    let mut rects = [Rect::new(0, 0, TASKBAR_BTN_W, TASKBAR_BTN_H); 5];
+    Rect::new(TASKBAR_X0, y, TASKBAR_START_W, TASKBAR_BTN_H)
+}
+
+/// The six button rects in **global** coordinates, left to right:
+fn taskbar_button_rects(screen_h: i32) -> [Rect; 6] {
+    let y = screen_h - HINT_BAR_H - TASKBAR_H + TASKBAR_PAD_Y;
+    let mut x = TASKBAR_BTN_X0;
+    let mut rects = [Rect::new(0, 0, TASKBAR_BTN_W, TASKBAR_BTN_H); 6];
     for r in &mut rects {
         r.x = x;
         r.y = y;
@@ -1123,34 +1264,85 @@ fn taskbar_button_rects(screen_h: i32) -> [Rect; 5] {
     rects
 }
 
-/// Draws the taskbar strip: body, 1 px top rule, buttons, clock stamp.
-fn draw_taskbar(g: &mut Graphics, theme: &Theme) {
-    let w = g.width() as i32;
-    let h = g.height() as i32;
-    let y = h - HINT_BAR_H - TASKBAR_H;
+impl WindowManager {
+    /// Draws the taskbar strip: body, 1 px top rule, Start button, app buttons, running indicators, clock stamp.
+    fn draw_taskbar(&self, g: &mut Graphics, theme: &Theme) {
+        let w = g.width() as i32;
+        let h = g.height() as i32;
+        let y = h - HINT_BAR_H - TASKBAR_H;
 
-    g.fill_rect(0, y, w as u32, TASKBAR_H as u32, theme.window_bg);
-    g.fill_rect(0, y, w as u32, 1, theme.text_primary);
+        g.fill_rect(0, y, w as u32, TASKBAR_H as u32, theme.taskbar_bg);
+        g.fill_rect(0, y, w as u32, 1, theme.border);
 
-    let buttons = taskbar_button_rects(h);
-    for (label, r) in TASKBAR_LABELS.iter().zip(buttons.iter()) {
-        g.fill_rect(r.x, r.y, r.w as u32, r.h as u32, theme.button_bg);
-        g.draw_rect(r.x, r.y, r.w as u32, r.h as u32, theme.border);
-        let tw = Graphics::text_width(label, 1);
-        let th = Graphics::text_height(1);
-        g.draw_text(
-            r.x + (r.w - tw) / 2,
-            r.y + (r.h - th) / 2,
-            label,
-            theme.text_primary,
-            None,
-            1,
+        // Start button [ ⊞ TriOS ]
+        let start_r = taskbar_start_rect(h);
+        g.fill_rect(
+            start_r.x,
+            start_r.y,
+            start_r.w as u32,
+            start_r.h as u32,
+            theme.button_bg,
         );
-    }
+        g.draw_rect(
+            start_r.x,
+            start_r.y,
+            start_r.w as u32,
+            start_r.h as u32,
+            theme.border,
+        );
 
-    let stamp_y = y + (TASKBAR_H - Graphics::text_height(1)) / 2;
-    let min_x = buttons[4].right() + TASKBAR_X0;
-    draw_uptime_stamp(g, w - TASKBAR_X0, min_x, stamp_y, theme.text_secondary);
+        let lx = start_r.x + 8;
+        let ly = start_r.y + (start_r.h - 10) / 2;
+        g.fill_rect(lx, ly, 4, 4, theme.accent);
+        g.fill_rect(lx + 5, ly, 4, 4, theme.accent);
+        g.fill_rect(lx, ly + 5, 4, 4, theme.accent);
+        g.fill_rect(lx + 5, ly + 5, 4, 4, theme.accent);
+        g.draw_text(lx + 13, ly + 1, "TriOS", theme.text_primary, None, 1);
+
+        // App buttons
+        let buttons = taskbar_button_rects(h);
+        let targets = self.taskbar_targets;
+        for (i, (&label, r)) in TASKBAR_LABELS.iter().zip(buttons.iter()).enumerate() {
+            g.fill_rect(r.x, r.y, r.w as u32, r.h as u32, theme.button_bg);
+            g.draw_rect(r.x, r.y, r.w as u32, r.h as u32, theme.border);
+            let tw = Graphics::text_width(label, 1);
+            let th = Graphics::text_height(1);
+            g.draw_text(
+                r.x + (r.w - tw) / 2,
+                r.y + (r.h - th) / 2,
+                label,
+                theme.text_primary,
+                None,
+                1,
+            );
+
+            // Active running indicator line underneath button
+            if let Some(tgt) = targets {
+                let target_id = match i {
+                    0 => tgt.files,
+                    1 => tgt.editor,
+                    2 => tgt.terminal,
+                    3 => tgt.browser,
+                    4 => tgt.sysmon,
+                    _ => tgt.mines,
+                };
+                if let Some(win) = self.windows.iter().find(|w| w.id == target_id) {
+                    let indicator_color = if win.focused {
+                        theme.taskbar_active
+                    } else {
+                        theme.text_secondary
+                    };
+                    let ind_w = if win.focused { r.w - 20 } else { r.w - 32 };
+                    let ind_x = r.x + (r.w - ind_w) / 2;
+                    g.fill_rect(ind_x, r.y + r.h - 2, ind_w as u32, 2, indicator_color);
+                }
+            }
+        }
+
+        let stamp_y = y + (TASKBAR_H - Graphics::text_height(1)) / 2;
+        let min_x = buttons[5].right() + TASKBAR_X0;
+        draw_uptime_stamp(g, w - TASKBAR_X0, min_x, stamp_y, theme.text_secondary);
+    }
 }
 
 /// Draws `Uptime: <secs> s` with its **right** edge at `right`, never
