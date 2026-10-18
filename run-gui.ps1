@@ -3,13 +3,12 @@ $Root = "D:\trios"
 $VBoxManage = "D:\virtualbox\VBoxManage.exe"
 $VmName = "TriOS"
 $SerialLog = Join-Path $Root "serial.log"
-$env:VBOX_USER_HOME = Join-Path $Root ".vbox-home"
+$env:VBOX_USER_HOME = Join-Path $Root ".vbox-run"
 
 Write-Host "Preparing TriOS for interactive GUI window..."
 
 # Power off any running instance
 try { & $VBoxManage controlvm $VmName poweroff 2>$null | Out-Null } catch {}
-try { & $VBoxManage unregistervm $VmName --delete 2>$null | Out-Null } catch {}
 
 # Convert latest release image
 $Image = Join-Path $Root "target\release\trios-uefi-release.img"
@@ -19,19 +18,31 @@ if (Test-Path $Vmdk) { Remove-Item $Vmdk -Force }
 
 # Create & configure VM
 $MachineFolder = Join-Path $env:VBOX_USER_HOME "Machines"
-New-Item -ItemType Directory -Force -Path $MachineFolder | Out-Null
-& $VBoxManage createvm --name $VmName --ostype Other_64 --basefolder $MachineFolder --register | Out-Null
+$MachineDir = Join-Path $MachineFolder $VmName
+$VboxFile = Join-Path $MachineDir "$VmName.vbox"
+
+$vmList = (& $VBoxManage list vms) -join "`n"
+if ($vmList -notmatch "`"$VmName`"") {
+    if (Test-Path $VboxFile) {
+        & $VBoxManage registervm $VboxFile | Out-Null
+    } else {
+        New-Item -ItemType Directory -Force -Path $MachineFolder | Out-Null
+        & $VBoxManage createvm --name $VmName --ostype Other_64 --basefolder $MachineFolder --register | Out-Null
+    }
+}
+
 & $VBoxManage modifyvm $VmName `
     --firmware efi `
-    --memory 256 `
-    --vram 16 `
+    --memory 512 `
+    --vram 128 `
     --boot1 disk --boot2 none --boot3 none --boot4 none `
-    --nic1 none `
+    --nic1 nat --nic-type1 82540EM `
     --mouse ps2 --keyboard ps2 `
     --audio-out off --audio-in off `
     --uart1 0x3F8 4 `
     --uartmode1 file $SerialLog | Out-Null
-& $VBoxManage storagectl $VmName --name SATA --add sata --controller IntelAhci --portcount 1 | Out-Null
+& $VBoxManage setextradata $VmName "VBoxInternal2/EfiGraphicsResolution" "1920x1080" | Out-Null
+try { & $VBoxManage storagectl $VmName --name SATA --add sata --controller IntelAhci --portcount 1 2>$null | Out-Null } catch {}
 & $VBoxManage storageattach $VmName --storagectl SATA --port 0 --device 0 --type hdd --medium $Vmdk | Out-Null
 
 Write-Host "Starting TriOS with visible display window..."

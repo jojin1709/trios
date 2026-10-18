@@ -68,9 +68,9 @@ pub const ED_STATUS: usize = ED_SAVE + 1;
 // ---------------------------------------------------------------------------
 
 const WIN_W: i32 = 340;
-const WIN_H: i32 = 300;
+const WIN_H: i32 = 310;
 /// First content row's y, and the row pitch (8 px glyphs + 4 px gap).
-const LINE_Y: i32 = 62;
+const LINE_Y: i32 = 70;
 const LINE_H: i32 = 12;
 /// Characters of a line before clipping (2 + 36 cells x 8 px + 12 px
 /// left margin = 316 px, inside the 340 px window).
@@ -111,7 +111,7 @@ impl Editor {
         if let Some(w) = wm.window_mut(win) {
             w.widgets.push(Widget::text_input(
                 12,
-                32,
+                38,
                 FIELD_W,
                 22,
                 "path e.g. /readme.txt",
@@ -125,13 +125,13 @@ impl Editor {
                 ));
             }
             w.widgets
-                .push(Widget::label("", 12, 206, theme.text_secondary));
+                .push(Widget::label("", 12, 214, theme.text_secondary));
             w.widgets
-                .push(Widget::text_input(12, 224, FIELD_W, 22, "current line"));
-            w.widgets.push(Widget::button(12, 252, 76, 22, "Load"));
-            w.widgets.push(Widget::button(96, 252, 76, 22, "Save"));
+                .push(Widget::text_input(12, 232, FIELD_W, 22, "current line"));
+            w.widgets.push(Widget::button(12, 260, 76, 22, "Load"));
+            w.widgets.push(Widget::button(96, 260, 76, 22, "Save"));
             w.widgets
-                .push(Widget::label("", 12, 284, theme.text_secondary));
+                .push(Widget::label("", 12, 292, theme.text_secondary));
         }
         Self {
             win,

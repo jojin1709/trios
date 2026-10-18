@@ -11,6 +11,7 @@
 
 # VirtualBox scratch home used by verification runs (run-virtualbox.ps1 -UseLocalHome)
 /.vbox-home/
+/.vbox-run/
 
 # Disk images / boot media (build outputs)
 *.vdi

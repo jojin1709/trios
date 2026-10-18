@@ -56,9 +56,9 @@ pub const TERM_INPUT: usize = TERM_LINES + TERM_LINE_COUNT;
 // ---------------------------------------------------------------------------
 
 const WIN_W: i32 = 300;
-const WIN_H: i32 = 246;
+const WIN_H: i32 = 256;
 /// First transcript row's y, and the row pitch (8 px glyphs + 5 px gap).
-const LINE_Y: i32 = 32;
+const LINE_Y: i32 = 38;
 const LINE_H: i32 = 13;
 /// Characters of a transcript line before clipping (35 x 8 = 280 px plus
 /// the 12 px left margin = 292 px, inside the 300 px window).
@@ -102,7 +102,7 @@ impl Terminal {
             }
             w.widgets.push(Widget::text_input(
                 12,
-                216,
+                224,
                 276,
                 22,
                 "command... (try 'help')",

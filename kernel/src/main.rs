@@ -55,6 +55,7 @@ use x86_64::VirtAddr;
 /// at one dynamic virtual offset. The heap ([`allocator`]) and future MMIO
 /// reach physical memory through that direct map — which is why Phase 1
 /// never has to edit page tables itself.
+#[allow(deprecated)]
 const CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     config.mappings.physical_memory = Some(Mapping::Dynamic);

@@ -55,18 +55,18 @@ powershell -ExecutionPolicy Bypass -File .\run-gui.ps1
 
 ## Overview
 
-TriOS is a modern, bare-metal operating system built from the ground up in Rust without any standard library (`#![no_std]`). It boots via UEFI into a 32-bit color GOP framebuffer, initializes hardware interrupt controllers, programs the timer, sets up virtual memory with a 16 MiB heap, and boots into a fully interactive graphical window manager powered by an event-driven loop and a preemptive multitasking kernel scheduler.
+TriOS is a modern, bare-metal operating system built from the ground up in Rust without any standard library (`#![no_std]`). It boots via UEFI into a 32-bit color 1080p GOP framebuffer, initializes hardware interrupt controllers, programs the timer, sets up virtual memory with a 32 MiB heap, and boots into a futuristic glass-aesthetic graphical window manager powered by an event-driven loop and a preemptive multitasking kernel scheduler.
 
 ---
 
 ## Architecture & Status
 
-TriOS has completed **Phase 0 through Phase 12**:
+TriOS has completed **Phase 0 through Phase 17**:
 
 | Phase | Milestone | Status | Key Subsystems |
 | :--- | :--- | :---: | :--- |
 | **Phase 0** | Bootloader & Image Build | **Done** | UEFI boot, direct physical memory map, dual-target cargo workspace |
-| **Phase 1** | Bare-Metal CPU Core | **Done** | GDT/TSS with IST1 stack, IDT, 8259 PIC remapping, PIT 100 Hz, COM1 UART serial, 16 MiB heap |
+| **Phase 1** | Bare-Metal CPU Core | **Done** | GDT/TSS with IST1 stack, IDT, 8259 PIC remapping, PIT 100 Hz, COM1 UART serial, 32 MiB heap |
 | **Phase 2** | Framebuffer & Graphics | **Done** | Double-buffered GOP canvas, 8×8 bitmap font renderer, drawing primitives |
 | **Phase 3** | Input & Window Manager | **Done** | PS/2 keyboard & mouse drivers, event queue, z-ordered window manager (drag, resize, focus, close) |
 | **Phase 4** | Shell, VFS & Text Fields | **Done** | In-memory RAM filesystem (`ramfs`), TextInput widgets, Files Explorer, Text Editor, Terminal shell |
@@ -82,11 +82,16 @@ TriOS has completed **Phase 0 through Phase 12**:
 | **Phase 14** | Desktop Web Browser Application | **Done** | GUI Browser app (`Ctrl+4`) with address bar, HTML tokenizer, formatted layout, and scrolling |
 | **Phase 15** | System Monitor & Task Manager | **Done** | Real-time CPU/RAM gauges, thread table, compositor FPS telemetry, and background worker spawning (`Ctrl+5`) |
 | **Phase 16** | Modern Desktop UI/UX & TriSweeper | **Done** | Desktop shortcut icons, modern taskbar with active indicators, window controls (`_`, `□`, `✕`), and TriSweeper puzzle game (`Ctrl+6`) |
+| **Phase 17** | Display + Visual Foundation | **Done** | Native 1080p GOP resolution, futuristic glass theme (`gui/theme.rs`), cached vertical gradient wallpaper with dot grid & faint emblem, floating centered dock, 32px titlebars with 10px rounded corners & drop shadows, floating toast, and 32 MiB heap |
 
 ---
 
 ## Key Features
 
+- **Futuristic Glass UI & 1080p Visual Foundation (Phase 17)**: Native 1920x1080 high-definition desktop layout backed by a 32 MiB kernel heap. Implements a curated design system in `kernel/src/gui/theme.rs` (`#0B0F1A` base, `#141B2D` surface, `#1C2540` highlight, cyan/violet accents, 10px window radius, 6px button radius, 32px titlebar, 56px dock, 16px drop shadows). Features a procedural vertical gradient wallpaper with a subtle 24px dot-matrix grid and a faint geometric TriOS triad logo, rendered once and cached for 60+ FPS compositing.
+- **Floating Centered Glass Dock & System Tray (Phase 17)**: Elevated floating dock (`56px` height) centered at bottom with rounded glass aesthetic. Hosts the stylized TriOS start menu button, 6 modern procedural app icons (`Files`, `Editor`, `Terminal`, `Browser`, `SysMon`, `Mines`) with hover highlights and running status dots, system separator, network signal bars, audio speaker, and 2-line live IST clock (`UTC+5:30`) and date.
+- **Glass Window Chrome & Modern Window Controls (Phase 17)**: 32px window titlebars with subtle borders, 10px rounded corners, gradient focus accenting, elevation drop shadows, and 3 titlebar control buttons: Minimize (`—`), Maximize/Restore (`□` / `❐`), and Close (`✕`).
+- **Floating Status Toast (Phase 17)**: Non-intrusive floating bottom-left rounded glass notification pill displaying input capture guidance with automatic dismissal after 5 seconds or on initial click.
 - **Desktop UI/UX Overhaul & Shortcut Icons (Phase 16)**: Modern desktop shell with 6 clickable desktop shortcut icons (`This PC`, `Files`, `Editor`, `Terminal`, `Browser`, `Mines`), refined Slate & Charcoal palette, 3D window elevation shadows, window controls (`_`, `□`, `✕` with red hover), and taskbar running indicator pills.
 - **TriSweeper Retro Desktop Game (Phase 16)**: Interactive 9x9 Minesweeper game (`Ctrl+6`) with 10 hidden mines, first-click protection, recursive zero-neighbor flood fill, HUD with live mine counter, timer, reset face button (`:-) / B-) / X-(`), and Dig/Flag modes.
 - **System Monitor & Task Manager (Phase 15)**: Graphical task manager displaying real-time CPU telemetry (core count, TSC frequency, uptime), physical memory & heap usage gauges with visual progress bar, compositor FPS & network telemetry, and live kernel thread table with interactive background task spawning (`Ctrl+5` or taskbar button).

@@ -39,8 +39,8 @@ pub const BR_FOOTER: usize = BR_ROWS + BR_ROW_COUNT;
 // ---------------------------------------------------------------------------
 
 const WIN_W: i32 = 540;
-const WIN_H: i32 = 360;
-const ROW_Y0: i32 = 78;
+const WIN_H: i32 = 376;
+const ROW_Y0: i32 = 88;
 const ROW_H: i32 = 14;
 const ROW_CLIP: usize = 62;
 
@@ -70,7 +70,7 @@ impl Browser {
             // Widget 0: URL TextInput
             let mut input = Widget::text_input(
                 12,
-                30,
+                38,
                 440,
                 22,
                 "http://example.com",
@@ -81,12 +81,12 @@ impl Browser {
             }
             w.widgets.push(input);
             // Widget 1: "Go" Button
-            w.widgets.push(Widget::button(460, 30, 68, 22, "Go"));
+            w.widgets.push(Widget::button(460, 38, 68, 22, "Go"));
             // Widget 2: Status Label
             w.widgets.push(Widget::label(
                 "Ready | Enter URL and click Go or press Enter",
                 12,
-                58,
+                66,
                 theme.text_secondary,
             ));
             // Widgets 3..18: 16 Content Rows

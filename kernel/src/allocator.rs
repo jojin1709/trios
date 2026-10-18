@@ -17,15 +17,11 @@ use x86_64::{PhysAddr, VirtAddr};
 
 use crate::memory::{BumpFrameAllocator, PAGE_SIZE};
 
-/// Kernel heap size: 16 MiB (4096 × 4 KiB frames).
+/// Kernel heap size: 32 MiB (8192 × 4 KiB frames).
 ///
-/// Phase 1 got away with 1 MiB, but Phase 2's double-buffered graphics need
-/// a backbuffer sized to the framebuffer: 1024×768 at 4 bytes/pixel is
-/// 3 MiB, 1920×1080 is ~8 MiB. 16 MiB fits any GOP mode that fits the
-/// test VM's 16 MiB VRAM, with headroom for the rest of the kernel. The
-/// allocation is contiguous, so the memory map must have a free 16 MiB run
-/// — the 256 MiB test VM has ~236 MiB usable, easily enough.
-pub const HEAP_SIZE: u64 = 16 * 1024 * 1024;
+/// Expanded for 1920×1080 double-buffered graphics backbuffer (~8.3 MiB)
+/// plus the cached background wallpaper buffer (~8.3 MiB).
+pub const HEAP_SIZE: u64 = 32 * 1024 * 1024;
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();

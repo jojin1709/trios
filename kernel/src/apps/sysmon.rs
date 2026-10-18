@@ -54,7 +54,7 @@ pub const SM_FOOTER: usize = SM_BTN_REFRESH + 1; // 17
 // ---------------------------------------------------------------------------
 
 const WIN_W: i32 = 540;
-const WIN_H: i32 = 360;
+const WIN_H: i32 = 376;
 
 // ---------------------------------------------------------------------------
 // SysMon State
@@ -79,21 +79,21 @@ impl SysMon {
             w.widgets.push(Widget::label(
                 "TriOS Task Manager & System Monitor v1.0",
                 14,
-                28,
+                38,
                 theme.text_primary,
             ));
             // Widget 1: Developer Subtitle
             w.widgets.push(Widget::label(
                 "Developer: JOJIN JOHN (@jojin1709) | x86_64 UEFI Bare-Metal",
                 14,
-                42,
+                52,
                 theme.text_secondary,
             ));
 
             // Widget 2: System Overview Panel
             w.widgets.push(Widget::panel(
                 12,
-                58,
+                68,
                 WIN_W - 24,
                 90,
                 theme.window_bg,
@@ -104,33 +104,33 @@ impl SysMon {
             w.widgets.push(Widget::label(
                 "CPU: x86_64 Multi-Core | Frequency: ~2.50 GHz | Uptime: 0s",
                 20,
-                66,
+                76,
                 theme.text_primary,
             ));
 
             // Widget 4: Memory Usage Label
             w.widgets.push(Widget::label(
-                "RAM: Calculating... | Heap: 0 / 16384 KiB",
+                "RAM: Calculating... | Heap: 0 / 32768 KiB",
                 20,
-                82,
+                92,
                 theme.text_secondary,
             ));
 
             // Widget 5: Memory Usage Bar
-            w.widgets.push(Widget::progress(20, 98, WIN_W - 40, 10, 0.20));
+            w.widgets.push(Widget::progress(20, 108, WIN_W - 40, 10, 0.20));
 
             // Widget 6: Compositor & Network Telemetry
             w.widgets.push(Widget::label(
                 "Compositor: ~175 FPS | Net: Intel e1000 Gigabit (10.0.2.15)",
                 20,
-                114,
+                124,
                 theme.text_secondary,
             ));
 
             // Widget 7: Tasks & Processes Panel
             w.widgets.push(Widget::panel(
                 12,
-                156,
+                166,
                 WIN_W - 24,
                 155,
                 theme.window_bg,
@@ -141,7 +141,7 @@ impl SysMon {
             w.widgets.push(Widget::label(
                 "TID   THREAD NAME            STATE       STACK",
                 20,
-                164,
+                174,
                 theme.accent,
             ));
 
@@ -150,22 +150,22 @@ impl SysMon {
                 w.widgets.push(Widget::label(
                     "",
                     20,
-                    182 + (i as i32) * 18,
+                    192 + (i as i32) * 18,
                     theme.text_primary,
                 ));
             }
 
             // Widget 15: Spawn Task Button
-            w.widgets.push(Widget::button(14, 320, 110, 22, "+ Spawn Task"));
+            w.widgets.push(Widget::button(14, 338, 110, 22, "+ Spawn Task"));
 
             // Widget 16: Refresh Button
-            w.widgets.push(Widget::button(132, 320, 80, 22, "Refresh"));
+            w.widgets.push(Widget::button(132, 338, 80, 22, "Refresh"));
 
             // Widget 17: Footer Status Label
             w.widgets.push(Widget::label(
                 "Auto-refreshes 1 Hz | Ctrl+5 to focus | Esc to close",
                 222,
-                324,
+                342,
                 theme.text_secondary,
             ));
         }

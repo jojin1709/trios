@@ -35,7 +35,7 @@ pub const MS_GRID_COUNT: usize = 81; // 9 * 9 = 81 buttons
 // ---------------------------------------------------------------------------
 
 const WIN_W: i32 = 300;
-const WIN_H: i32 = 360;
+const WIN_H: i32 = 376;
 
 const GRID_COLS: usize = 9;
 const GRID_ROWS: usize = 9;
@@ -43,7 +43,7 @@ const TOTAL_MINES: usize = 10;
 
 const CELL_SIZE: i32 = 28;
 const GRID_X0: i32 = (WIN_W - (GRID_COLS as i32 * CELL_SIZE)) / 2; // (300 - 252) / 2 = 24
-const GRID_Y0: i32 = 72;
+const GRID_Y0: i32 = 82;
 
 // ---------------------------------------------------------------------------
 // Game State
@@ -90,18 +90,18 @@ impl Minesweeper {
         let win = wm.create_window("TriSweeper", 350, 90, WIN_W, WIN_H);
         if let Some(w) = wm.window_mut(win) {
             // 0: Mine Counter Label
-            w.widgets.push(Widget::label("Mines: 10", 24, 32, theme.text_primary));
+            w.widgets.push(Widget::label("Mines: 10", 24, 42, theme.text_primary));
             // 1: Reset Face Button
-            w.widgets.push(Widget::button(120, 26, 60, 24, ":-)"));
+            w.widgets.push(Widget::button(120, 36, 60, 24, ":-)"));
             // 2: Timer Label
-            w.widgets.push(Widget::label("Time: 0s", 216, 32, theme.text_primary));
+            w.widgets.push(Widget::label("Time: 0s", 216, 42, theme.text_primary));
             // 3: Mode Toggle Button
-            w.widgets.push(Widget::button(24, 52, 100, 18, "[Mode: Dig]"));
+            w.widgets.push(Widget::button(24, 60, 100, 18, "[Mode: Dig]"));
             // 4: Status footer
             w.widgets.push(Widget::label(
                 "Click: Dig | 'F': Mode | 'R': Reset",
                 24,
-                332,
+                348,
                 theme.text_secondary,
             ));
 

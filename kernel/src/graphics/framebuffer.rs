@@ -129,6 +129,80 @@ impl Graphics {
 
     // -- primitives (all draw into the backbuffer, all safe Rust) ----------
 
+    /// Copies a full pre-rendered frame or wallpaper into the backbuffer in a single burst.
+    #[inline]
+    pub fn blit_full(&mut self, src: &[u8]) {
+        if self.back.len() == src.len() {
+            self.back.copy_from_slice(src);
+        }
+    }
+
+    /// Draws a vertical linear gradient from color `from` to `to` over a rectangle.
+    pub fn fill_vertical_gradient(&mut self, x: i32, y: i32, w: u32, h: u32, from: Color, to: Color) {
+        if h == 0 || w == 0 {
+            return;
+        }
+        for row in 0..h {
+            let num = row as u32;
+            let den = h.max(1) as u32;
+            let r = ((from.r as u32 * (den - num) + to.r as u32 * num) / den) as u8;
+            let g = ((from.g as u32 * (den - num) + to.g as u32 * num) / den) as u8;
+            let b = ((from.b as u32 * (den - num) + to.b as u32 * num) / den) as u8;
+            self.fill_rect(x, y + row as i32, w, 1, Color::new(r, g, b));
+        }
+    }
+
+    /// Fills a rounded rectangle with given radius.
+    pub fn fill_rounded_rect(&mut self, x: i32, y: i32, w: u32, h: u32, radius: i32, color: Color) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let r = radius.min(w as i32 / 2).min(h as i32 / 2).max(0);
+        if r <= 1 {
+            self.fill_rect(x, y, w, h, color);
+            return;
+        }
+        // Central body
+        self.fill_rect(x, y + r, w, (h as i32 - 2 * r).max(0) as u32, color);
+        // Top and bottom horizontal strips
+        for dy in 0..r {
+            // dx calculation using circle equation: dx = round(sqrt(r^2 - (r - 1 - dy)^2))
+            let rem = r - 1 - dy;
+            let dx = r - int_sqrt(r * r - rem * rem);
+            let row_w = (w as i32 - 2 * dx).max(0) as u32;
+            self.fill_rect(x + dx, y + dy, row_w, 1, color);
+            self.fill_rect(x + dx, y + h as i32 - 1 - dy, row_w, 1, color);
+        }
+    }
+
+    /// Outlines a rounded rectangle with 1-pixel border.
+    pub fn draw_rounded_rect(&mut self, x: i32, y: i32, w: u32, h: u32, radius: i32, color: Color) {
+        if w < 2 || h < 2 {
+            return;
+        }
+        let r = radius.min(w as i32 / 2).min(h as i32 / 2).max(0);
+        if r <= 1 {
+            self.draw_rect(x, y, w, h, color);
+            return;
+        }
+        // Top and bottom straight lines
+        self.fill_rect(x + r, y, (w as i32 - 2 * r).max(0) as u32, 1, color);
+        self.fill_rect(x + r, y + h as i32 - 1, (w as i32 - 2 * r).max(0) as u32, 1, color);
+        // Left and right straight lines
+        self.fill_rect(x, y + r, 1, (h as i32 - 2 * r).max(0) as u32, color);
+        self.fill_rect(x + w as i32 - 1, y + r, 1, (h as i32 - 2 * r).max(0) as u32, color);
+
+        // Corner arcs
+        for dy in 0..r {
+            let rem = r - 1 - dy;
+            let dx = r - int_sqrt(r * r - rem * rem);
+            self.set_pixel(x + dx, y + dy, color);
+            self.set_pixel(x + w as i32 - 1 - dx, y + dy, color);
+            self.set_pixel(x + dx, y + h as i32 - 1 - dy, color);
+            self.set_pixel(x + w as i32 - 1 - dx, y + h as i32 - 1 - dy, color);
+        }
+    }
+
     /// Sets one pixel. Out-of-bounds coordinates are silently clipped —
     /// callers doing layout math (centering, bouncing balls) shouldn't
     /// have to range-check every draw.
@@ -385,4 +459,18 @@ impl Graphics {
             }
         }
     }
+}
+
+/// Simple integer square root for rounded corner geometry.
+fn int_sqrt(n: i32) -> i32 {
+    if n <= 0 {
+        return 0;
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
 }

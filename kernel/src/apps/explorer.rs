@@ -70,13 +70,13 @@ pub const EX_INPUT: usize = EX_NEW + 1;
 /// Window size (the body is what these constants budget for; the titlebar
 /// sits above `y = 0`'s content in window-local coordinates).
 const WIN_W: i32 = 300;
-const WIN_H: i32 = 276;
+const WIN_H: i32 = 286;
 /// First row's y, and the row pitch: 8 px glyphs + 4 px of gap.
-const ROW_Y: i32 = 44;
+const ROW_Y: i32 = 54;
 const ROW_H: i32 = 12;
 /// Button/input band, shared by the two buttons and the prompt.
-const BUTTON_Y: i32 = 218;
-const INPUT_Y: i32 = 246;
+const BUTTON_Y: i32 = 228;
+const INPUT_Y: i32 = 256;
 /// Characters of an entry name before clipping (the `"> "` prefix and an
 /// optional directory `/` sit on top: 2 + 30 = 32 cells x 8 px + 12 px
 /// left margin = 268 px, inside the 300 px window).
@@ -113,7 +113,7 @@ impl Explorer {
         let win = wm.create_window("Files", 16, 300, WIN_W, WIN_H);
         if let Some(w) = wm.window_mut(win) {
             w.widgets
-                .push(Widget::label("/", 12, 30, theme.text_secondary));
+                .push(Widget::label("/", 12, 38, theme.text_secondary));
             for i in 0..EX_ROW_COUNT {
                 w.widgets.push(Widget::label(
                     "",

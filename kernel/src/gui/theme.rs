@@ -1,78 +1,102 @@
-//! The TriOS theme — every color the GUI uses, in one table (Phase 3).
+//! The TriOS theme — design tokens and metrics (Phase 17: Display + Visual Foundation).
 //!
-//! Why centralize? Because "make unfocused windows obviously unfocused"
-//! or "darken the palette" must be a *one-line* edit, not a hunt through
-//! widget code. Widgets receive `&Theme` on every draw and pick the
-//! colors they need; nothing hardcodes a hex value downstream.
-//!
-//! The palette continues Phase 2's "GitHub dark" direction: deep
-//! blue-black canvas, one confident blue accent, green for success.
+//! Provides the centralized design tokens specified by the TriOS Design System:
+//! - Colors: bg, surface, surface_hi, border, text, text_dim, accent_cyan, accent_violet, success, danger, warning
+//! - Metrics: window_radius (10), button_radius (6), titlebar_height (32), dock_height (56), shadow_blur (16)
+//! - Clock: UTC offset constant (IST +5:30)
 
 use crate::graphics::Color;
 
-/// Colors used by the window manager and widgets.
-///
-/// Construct with [`Theme::default`] (or `Theme::new` in const contexts).
+pub const WINDOW_RADIUS: i32 = 10;
+pub const BUTTON_RADIUS: i32 = 6;
+pub const TITLEBAR_H: i32 = 32;
+pub const DOCK_H: i32 = 56;
+#[allow(dead_code)]
+pub const SHADOW_BLUR: i32 = 16;
+
+/// Local timezone offset: IST (UTC +5:30).
+pub const UTC_OFFSET_HOURS: i32 = 5;
+pub const UTC_OFFSET_MINS: i32 = 30;
+
+/// Design tokens used by the window manager, dock, and widgets.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
-    /// Desktop background (behind all windows).
+    // Phase 17 Core Tokens
     pub bg: Color,
-    /// Accent blue — focused titlebars, progress fill, highlights.
-    pub accent: Color,
-    /// Success green — e.g. a slider thumb being dragged.
-    pub success: Color,
-    /// Primary text (titles, label bodies).
-    pub text_primary: Color,
-    /// Secondary/muted text (hints, counters).
-    pub text_secondary: Color,
-    /// Window body background.
-    pub window_bg: Color,
-    /// Titlebar of an *unfocused* window (deliberately darker — the
-    /// "which window has focus?" cue at a glance).
-    pub titlebar_bg: Color,
-    /// Titlebar of the focused window (accent blue).
-    pub titlebar_bg_focused: Color,
-    /// Button face, resting.
-    pub button_bg: Color,
-    /// Button face, cursor over it.
-    pub button_bg_hover: Color,
-    /// Button face, mouse held down on it.
-    pub button_bg_pressed: Color,
-    /// 1-px borders, window outlines, separators.
+    pub surface: Color,
+    pub surface_hi: Color,
     pub border: Color,
-    /// Close button hover state (clean crimson).
+    pub text: Color,
+    pub text_dim: Color,
+    pub accent_cyan: Color,
+    pub accent_violet: Color,
+    pub success: Color,
+    pub danger: Color,
+    pub warning: Color,
+
+    // Component mappings & aliases for widgets
+    pub accent: Color,
+    pub text_primary: Color,
+    pub text_secondary: Color,
+    pub window_bg: Color,
+    pub titlebar_bg: Color,
+    pub titlebar_bg_focused: Color,
+    pub button_bg: Color,
+    pub button_bg_hover: Color,
+    pub button_bg_pressed: Color,
     pub close_hover: Color,
-    /// Taskbar background.
     pub taskbar_bg: Color,
-    /// Active running app indicator accent.
     pub taskbar_active: Color,
+    pub dock_bg: Color,
 }
 
 impl Theme {
     /// The default palette as `const fn` — usable in constant contexts.
     pub const fn new() -> Self {
+        let bg = Color::rgb(0x0B0F1A);
+        let surface = Color::rgb(0x141B2D);
+        let surface_hi = Color::rgb(0x1C2540);
+        let border = Color::rgb(0x283144);
+        let text = Color::rgb(0xE6EAF5);
+        let text_dim = Color::rgb(0x8A93AD);
+        let accent_cyan = Color::rgb(0x22D3EE);
+        let accent_violet = Color::rgb(0x8B5CF6);
+        let success = Color::rgb(0x34D399);
+        let danger = Color::rgb(0xF87171);
+        let warning = Color::rgb(0xFBBF24);
+
         Self {
-            bg: Color::rgb(0x111520),
-            accent: Color::rgb(0x2563EB),
-            success: Color::rgb(0x16A34A),
-            text_primary: Color::rgb(0xF8FAFC),
-            text_secondary: Color::rgb(0x94A3B8),
-            window_bg: Color::rgb(0x1A1F2C),
-            titlebar_bg: Color::rgb(0x222838),
-            titlebar_bg_focused: Color::rgb(0x1E3A8A),
-            button_bg: Color::rgb(0x252D3E),
-            button_bg_hover: Color::rgb(0x323C52),
-            button_bg_pressed: Color::rgb(0x181E2A),
-            border: Color::rgb(0x333D52),
-            close_hover: Color::rgb(0xE11D48),
-            taskbar_bg: Color::rgb(0x151822),
-            taskbar_active: Color::rgb(0x3B82F6),
+            bg,
+            surface,
+            surface_hi,
+            border,
+            text,
+            text_dim,
+            accent_cyan,
+            accent_violet,
+            success,
+            danger,
+            warning,
+
+            accent: accent_cyan,
+            text_primary: text,
+            text_secondary: text_dim,
+            window_bg: surface,
+            titlebar_bg: surface,
+            titlebar_bg_focused: surface_hi,
+            button_bg: surface_hi,
+            button_bg_hover: Color::rgb(0x283556),
+            button_bg_pressed: surface,
+            close_hover: danger,
+            taskbar_bg: surface,
+            taskbar_active: accent_cyan,
+            dock_bg: surface,
         }
     }
 }
 
 impl Default for Theme {
-    /// `Theme::default()` — the natural spelling at call sites.
     fn default() -> Self {
         Self::new()
     }
