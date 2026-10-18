@@ -59,7 +59,7 @@ TriOS is a modern, bare-metal operating system built from the ground up in Rust 
 
 ## Architecture & Status
 
-TriOS has completed **Phase 0 through Phase 8**:
+TriOS has completed **Phase 0 through Phase 9**:
 
 | Phase | Milestone | Status | Key Subsystems |
 | :--- | :--- | :---: | :--- |
@@ -72,16 +72,18 @@ TriOS has completed **Phase 0 through Phase 8**:
 | **Phase 6** | User Descriptors & Syscalls | **Done** | GDT User DPL-3 code/data, TSS RSP0 privilege stack, IA32_EFER/STAR/LSTAR/FMASK MSRs, fast `syscall` dispatcher |
 | **Phase 7** | PCI Bus & AHCI SATA Driver | **Done** | PCI configuration space scanner, AHCI Generic Host Control MMIO, SATA disk device detection |
 | **Phase 8** | Standalone ELF Loader & Exec | **Done** | ELF64 header & PT_LOAD segment parser, page table NO_EXECUTE clearing, binary execution via terminal (`elfinfo`, `elfrun`) |
+| **Phase 9** | Persistent Storage & FAT VFS | **Done** | GUID Partition Table (GPT) parser, AHCI DMA sector reading, FAT12/16/32 volume mounter, disk traversal (`gpt`, `fatls`, `disks`) |
 
 ---
 
 ## Key Features
 
+- **Persistent Disk & FAT Filesystem**: Scans GPT partition tables from SATA disks, mounts FAT12/16/32 volumes via AHCI DMA reads, and navigates directories.
 - **Standalone ELF64 Executable Loader**: Parses standard 64-bit ELF binaries, maps PT_LOAD segments, configures executable page permissions, and spawns user processes.
 - **Preemptive Kernel Multitasking**: Round-robin thread scheduler running background threads concurrently with the desktop GUI event loop.
 - **Interactive Window Manager**: Real-time window dragging, resizing via bottom-right grip, focus switching, and z-ordering.
 - **Built-in Shell Applications**:
-  - **Terminal**: Interactive CLI supporting commands (`help`, `uptime`, `clear`, `elfinfo`, `elfrun`).
+  - **Terminal**: Interactive CLI supporting commands (`help`, `uptime`, `clear`, `elfinfo`, `elfrun`, `disks`, `gpt`, `fatls`).
   - **Files Explorer**: Interactive directory browsing of the in-memory virtual filesystem.
   - **Text Editor**: Live text buffer editing with load and save integration into `ramfs`.
   - **Welcome & Playground**: Demo widgets showcasing buttons, click counters, sliders, and progress bars.

@@ -194,6 +194,9 @@ impl Terminal {
                 out.push(String::from("uptime - seconds since boot"));
                 out.push(String::from("elfinfo <path> - inspect ELF executable"));
                 out.push(String::from("elfrun <path> - load and execute ELF binary"));
+                out.push(String::from("disks - list SATA storage controllers"));
+                out.push(String::from("gpt - list GPT partitions on disk"));
+                out.push(String::from("fatls [dir] - list FAT volume directory"));
             }
             "ls" => {
                 let dir = if rest.is_empty() {
@@ -314,6 +317,69 @@ impl Terminal {
                             }
                         }
                     }
+                }
+            }
+            "gpt" | "partitions" => {
+                match crate::fs::gpt::scan_partitions(crate::drivers::ahci::read_sector) {
+                    Ok((_hdr, parts)) => {
+                        out.push(format!("GPT valid: {} partition(s)", parts.len()));
+                        for (i, p) in parts.iter().enumerate() {
+                            out.push(format!(
+                                "#{i}: '{}' LBA {}..{} ({} KB)",
+                                p.name,
+                                p.starting_lba,
+                                p.ending_lba,
+                                (p.ending_lba - p.starting_lba + 1) / 2
+                            ));
+                        }
+                    }
+                    Err(err) => out.push(format!("GPT scan error: {err}")),
+                }
+            }
+            "fatls" => {
+                let dir = if rest.is_empty() { "/" } else { rest };
+                match crate::fs::gpt::scan_partitions(crate::drivers::ahci::read_sector) {
+                    Ok((_, parts)) => {
+                        if let Some(boot) = parts.first() {
+                            match crate::fs::fat::FatFileSystem::mount(boot.starting_lba, &crate::drivers::ahci::read_sector) {
+                                Ok(fat_fs) => {
+                                    match fat_fs.list_dir(dir, &crate::drivers::ahci::read_sector) {
+                                        Ok(entries) => {
+                                            out.push(format!("FAT [{dir}] ({} entries):", entries.len()));
+                                            for e in entries {
+                                                out.push(format!(
+                                                    "{}{}",
+                                                    e.name,
+                                                    if e.is_dir { "/" } else { "" }
+                                                ));
+                                            }
+                                        }
+                                        Err(err) => out.push(format!("fatls error: {err}")),
+                                    }
+                                }
+                                Err(err) => out.push(format!("mount error: {err}")),
+                            }
+                        } else {
+                            out.push(String::from("no partitions found"));
+                        }
+                    }
+                    Err(err) => out.push(format!("disk error: {err}")),
+                }
+            }
+            "disks" => {
+                let lock = crate::drivers::ahci::AHCI_CONTROLLER.lock();
+                match lock.as_ref() {
+                    Some(ctrl) => {
+                        out.push(format!(
+                            "AHCI SATA BAR5={:#x} (active drives: {})",
+                            ctrl.bar5_phys,
+                            ctrl.active_drives.len()
+                        ));
+                        for port in &ctrl.active_drives {
+                            out.push(format!("  Port #{port}: SATA Hard Disk [Ready]"));
+                        }
+                    }
+                    None => out.push(String::from("AHCI storage controller not initialized")),
                 }
             }
             "" => {}

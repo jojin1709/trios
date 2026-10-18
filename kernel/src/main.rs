@@ -180,7 +180,58 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     syscall::init();
 
     // Phase 7: PCI bus enumeration & AHCI SATA block storage driver
-    let _sata = drivers::AhciController::init(phys_offset);
+    let sata_ready = drivers::AhciController::init(phys_offset);
+
+    // Phase 9: Persistent Storage — GPT Partition Table & FAT Filesystem
+    if sata_ready {
+        match fs::gpt::scan_partitions(drivers::ahci::read_sector) {
+            Ok((hdr, parts)) => {
+                serial_println!(
+                    "[gpt    ] valid partition table: {} entries (LBA {}..{})",
+                    parts.len(),
+                    hdr.first_usable_lba,
+                    hdr.last_usable_lba
+                );
+                for (idx, p) in parts.iter().enumerate() {
+                    serial_println!(
+                        "[gpt    ] partition #{idx}: '{}' (LBA {}..{})",
+                        p.name,
+                        p.starting_lba,
+                        p.ending_lba
+                    );
+                }
+                if let Some(boot_part) = parts.first() {
+                    match fs::fat::FatFileSystem::mount(boot_part.starting_lba, &drivers::ahci::read_sector) {
+                        Ok(fat_fs) => {
+                            serial_println!(
+                                "[fat    ] mounted {:?} volume '{}' (label: '{}')",
+                                fat_fs.bpb.fat_type,
+                                boot_part.name,
+                                fat_fs.bpb.volume_label
+                            );
+                            if let Ok(entries) = fat_fs.list_dir("/", &drivers::ahci::read_sector) {
+                                serial_println!("[fat    ] root directory contains {} entries:", entries.len());
+                                for e in entries {
+                                    serial_println!(
+                                        "[fat    ]   {} {:<12} ({} bytes)",
+                                        if e.is_dir { "[DIR ]" } else { "[FILE]" },
+                                        e.name,
+                                        e.size
+                                    );
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            serial_println!("[fat    ] failed to mount partition: {err}");
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                serial_println!("[gpt    ] GPT scan error: {err}");
+            }
+        }
+    }
 
     // Spawn a background kernel worker thread to verify concurrent multitasking
     sched::spawn("background_worker", background_worker);

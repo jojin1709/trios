@@ -38,6 +38,8 @@
 #![allow(dead_code)]
 
 pub mod elf;
+pub mod fat;
+pub mod gpt;
 
 use alloc::string::String;
 use alloc::vec::Vec;
