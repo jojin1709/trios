@@ -35,6 +35,7 @@ mod input;
 mod interrupts;
 mod memory;
 mod mmio;
+mod net;
 mod panic;
 mod perf;
 mod sched;
@@ -232,6 +233,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
         }
     }
+
+    // Phase 10: Intel 82540EM (e1000) Gigabit Ethernet NIC & Network Stack
+    init_network(phys_offset);
 
     // Spawn a background kernel worker thread to verify concurrent multitasking
     sched::spawn("background_worker", background_worker);
@@ -539,6 +543,9 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
     loop {
         let mut dirty = false; // something visible changed this pass
         let mut maybe_close = false; // a window might want closing
+
+        // Phase 10: Poll network interface for pending packets
+        net::poll_network();
 
         // Drain *everything* the IRQs produced while we slept; act once
         // per batch, then redraw at most once. (Queue capacity 512 ≈ 5 s
@@ -1019,4 +1026,53 @@ extern "C" fn background_worker() {
         );
     }
 }
+
+/// Discovers and arms Intel 82540EM (e1000) network card on PCI bus.
+fn init_network(phys_offset: VirtAddr) {
+    serial_println!("[net    ] scanning PCI bus for Ethernet network controllers...");
+    let devices = drivers::pci::scan_bus();
+    let mut nic_dev = None;
+    for dev in devices {
+        if dev.vendor_id == drivers::e1000::INTEL_VEND
+            && (dev.device_id == drivers::e1000::E1000_DEV_82540EM
+                || dev.device_id == drivers::e1000::E1000_DEV_82545EM
+                || dev.device_id == drivers::e1000::E1000_DEV_82543GC
+                || (dev.class_code == 0x02 && dev.subclass == 0x00))
+        {
+            serial_println!(
+                "[net    ] found Intel E1000 NIC at {}:{}.0 (vendor={:#06x}, dev={:#06x}, BAR0={:#x})",
+                dev.location.bus,
+                dev.location.device,
+                dev.vendor_id,
+                dev.device_id,
+                dev.bar0
+            );
+            nic_dev = Some(dev);
+            break;
+        }
+    }
+
+    if let Some(dev) = nic_dev {
+        match drivers::E1000Driver::init(&dev, phys_offset.as_u64()) {
+            Ok(driver) => {
+                let mac = driver.mac;
+                *drivers::E1000.lock() = Some(driver);
+                serial_println!(
+                    "[net    ] E1000 driver initialized! MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                );
+
+                // Broadcast gratuitous ARP so the host/network learns our MAC
+                let our_ip = net::NET.lock().ip;
+                let _ = net::send_arp_request(our_ip);
+            }
+            Err(e) => {
+                serial_println!("[net    ] E1000 initialization failed: {e}");
+            }
+        }
+    } else {
+        serial_println!("[net    ] no supported Ethernet NIC found on PCI bus");
+    }
+}
+
 

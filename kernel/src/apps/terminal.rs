@@ -197,6 +197,9 @@ impl Terminal {
                 out.push(String::from("disks - list SATA storage controllers"));
                 out.push(String::from("gpt - list GPT partitions on disk"));
                 out.push(String::from("fatls [dir] - list FAT volume directory"));
+                out.push(String::from("netinfo - show network adapter & IP stats"));
+                out.push(String::from("arp - display ARP cache table"));
+                out.push(String::from("ping <ip> - send ICMP Echo Request"));
             }
             "ls" => {
                 let dir = if rest.is_empty() {
@@ -380,6 +383,124 @@ impl Terminal {
                         }
                     }
                     None => out.push(String::from("AHCI storage controller not initialized")),
+                }
+            }
+            "netinfo" | "ifconfig" => {
+                let nic_guard = crate::drivers::e1000::E1000.lock();
+                match nic_guard.as_ref() {
+                    Some(nic) => {
+                        let mac = nic.mac;
+                        let link = if nic.is_link_up() { "UP" } else { "DOWN" };
+                        out.push(format!("eth0: Intel 82540EM [Link {link}]"));
+                        out.push(format!(
+                            "  MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                        ));
+                        let net = crate::net::NET.lock();
+                        out.push(format!(
+                            "  IP:  {}.{}.{}.{}/24",
+                            net.ip[0], net.ip[1], net.ip[2], net.ip[3]
+                        ));
+                        out.push(format!(
+                            "  GW:  {}.{}.{}.{}",
+                            net.gateway[0], net.gateway[1], net.gateway[2], net.gateway[3]
+                        ));
+                        out.push(format!(
+                            "  TX:  {} pkts ({} B)",
+                            nic.packets_tx, nic.bytes_tx
+                        ));
+                        out.push(format!(
+                            "  RX:  {} pkts ({} B)",
+                            nic.packets_rx, nic.bytes_rx
+                        ));
+                    }
+                    None => out.push(String::from("no network interface card detected")),
+                }
+            }
+            "arp" => {
+                let net = crate::net::NET.lock();
+                if net.arp_cache.is_empty() {
+                    out.push(String::from("ARP cache is empty"));
+                } else {
+                    out.push(format!("ARP cache ({} entries):", net.arp_cache.len()));
+                    for entry in &net.arp_cache {
+                        out.push(format!(
+                            "{}.{}.{}.{} at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                            entry.ip[0], entry.ip[1], entry.ip[2], entry.ip[3],
+                            entry.mac[0], entry.mac[1], entry.mac[2], entry.mac[3], entry.mac[4], entry.mac[5]
+                        ));
+                    }
+                }
+            }
+            "ping" => {
+                if rest.is_empty() {
+                    out.push(String::from("usage: ping <ip> (e.g. ping 10.0.2.2)"));
+                } else {
+                    let target_str = split_first(rest).map_or(rest, |(p, _)| p);
+                    let mut ip_parts = [0u8; 4];
+                    let mut count = 0;
+                    let mut valid = true;
+                    for p in target_str.split('.') {
+                        if count < 4 {
+                            if let Ok(val) = p.parse::<u8>() {
+                                ip_parts[count] = val;
+                                count += 1;
+                            } else {
+                                valid = false;
+                                break;
+                            }
+                        } else {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if !valid || count != 4 {
+                        out.push(format!("invalid IPv4 address: {target_str}"));
+                    } else {
+                        out.push(format!("PING {}.{}.{}.{}: 32 data bytes", ip_parts[0], ip_parts[1], ip_parts[2], ip_parts[3]));
+
+                        // Send ARP request to populate ARP cache if not already present
+                        let _ = crate::net::send_arp_request(ip_parts);
+                        for _ in 0..10_000 {
+                            crate::net::poll_network();
+                        }
+
+                        // Clear old ping replies with seq 1
+                        {
+                            let mut net = crate::net::NET.lock();
+                            net.ping_replies.retain(|r| r.seq != 1);
+                        }
+
+                        let start_ticks = crate::timer::ticks();
+                        match crate::net::send_icmp_ping(ip_parts, 1) {
+                            Ok(()) => {
+                                let mut reply = None;
+                                for _ in 0..600_000 {
+                                    crate::net::poll_network();
+                                    let net = crate::net::NET.lock();
+                                    if let Some(pos) = net.ping_replies.iter().position(|r| r.seq == 1 && r.from_ip == ip_parts) {
+                                        reply = Some(net.ping_replies[pos].clone());
+                                        break;
+                                    }
+                                    core::hint::spin_loop();
+                                }
+                                let elapsed = crate::timer::ticks().saturating_sub(start_ticks);
+                                let ms = elapsed * 10;
+                                if let Some(r) = reply {
+                                    out.push(format!(
+                                        "64B from {}.{}.{}.{}: t={}ms",
+                                        r.from_ip[0], r.from_ip[1], r.from_ip[2], r.from_ip[3],
+                                        if ms == 0 { 1 } else { ms }
+                                    ));
+                                } else {
+                                    out.push(format!("ping timeout: no reply from {target_str}"));
+                                }
+                            }
+                            Err(err) => {
+                                out.push(format!("ping send error: {err}"));
+                            }
+                        }
+                    }
                 }
             }
             "" => {}

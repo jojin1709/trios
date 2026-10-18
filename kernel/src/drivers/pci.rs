@@ -28,6 +28,7 @@ pub struct PciDeviceInfo {
     pub class_code: u8,
     pub subclass: u8,
     pub prog_if: u8,
+    pub bar0: u32,
     pub bar5: u32,
 }
 
@@ -70,6 +71,23 @@ pub fn pci_write_u32(bus: u8, device: u8, function: u8, offset: u8, value: u32) 
     }
 }
 
+/// Writes a 16-bit word to PCI configuration space.
+pub fn pci_write_u16(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
+    let dword = pci_read_u32(bus, device, function, offset);
+    let shift = (offset & 2) * 8;
+    let mask = !(0xFFFFu32 << shift);
+    let new_dword = (dword & mask) | ((value as u32) << shift);
+    pci_write_u32(bus, device, function, offset, new_dword);
+}
+
+/// Enables Bus Mastering and Memory Space on the PCI device.
+pub fn pci_enable_device(bus: u8, device: u8, function: u8) {
+    let cmd = pci_read_u16(bus, device, function, 0x04);
+    // Bit 0: I/O Space, Bit 1: Memory Space, Bit 2: Bus Master
+    let new_cmd = cmd | 0x0006;
+    pci_write_u16(bus, device, function, 0x04, new_cmd);
+}
+
 /// Scans PCI buses 0..8 for attached hardware devices.
 pub fn scan_bus() -> alloc::vec::Vec<PciDeviceInfo> {
     let mut devices = alloc::vec::Vec::new();
@@ -90,6 +108,7 @@ pub fn scan_bus() -> alloc::vec::Vec<PciDeviceInfo> {
             let class_code = ((class_rev >> 24) & 0xFF) as u8;
             let subclass = ((class_rev >> 16) & 0xFF) as u8;
             let prog_if = ((class_rev >> 8) & 0xFF) as u8;
+            let bar0 = pci_read_u32(bus, device, 0, 0x10);
             let bar5 = pci_read_u32(bus, device, 0, 0x24);
 
             let loc = PciDeviceLocation {
@@ -107,6 +126,7 @@ pub fn scan_bus() -> alloc::vec::Vec<PciDeviceInfo> {
                 class_code,
                 subclass,
                 prog_if,
+                bar0,
                 bar5,
             };
 
