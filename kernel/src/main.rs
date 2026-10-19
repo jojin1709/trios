@@ -264,6 +264,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // Phase 10: Intel 82540EM (e1000) Gigabit Ethernet NIC & Network Stack
     init_network(phys_offset);
 
+    // Phase 25: Advanced Programmable Interrupt Controller (Local APIC & IOAPIC)
+    interrupts::init_apic(phys_offset.as_u64());
+
     // Spawn a background kernel worker thread to verify concurrent multitasking
     sched::spawn("background_worker", background_worker);
 

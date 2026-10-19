@@ -73,6 +73,11 @@ impl InterruptIndex {
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
+        idt.divide_error.set_handler_fn(divide_error_handler);
+        idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+        idt.invalid_tss.set_handler_fn(invalid_tss_handler);
+        idt.segment_not_present.set_handler_fn(segment_not_present_handler);
+        idt.stack_segment_fault.set_handler_fn(stack_segment_fault_handler);
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         unsafe {
             // SAFETY: `DOUBLE_FAULT_IST_INDEX` points at IST1, a dedicated
@@ -85,9 +90,16 @@ lazy_static! {
         idt.page_fault.set_handler_fn(page_fault_handler);
         idt.general_protection_fault
             .set_handler_fn(general_protection_fault_handler);
+
+        // Populate all IRQ vectors with safe generic EOI acknowledgment
+        for v in 32..=254 {
+            idt[v].set_handler_fn(generic_unhandled_irq_handler);
+        }
+
         idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::Mouse.as_u8()].set_handler_fn(mouse_interrupt_handler);
+        idt[0xFF].set_handler_fn(spurious_interrupt_handler);
         idt
     };
 }
@@ -156,14 +168,63 @@ pub fn init_pic() {
 /// with no handler would triple-fault. The caller logs the masks back
 /// from the hardware via [`log_masks`] right after this returns
 /// (expected: `master=0xF8 slave=0xEF`).
+pub fn disable_pic() {
+    unsafe {
+        Port::<u8>::new(0x21).write(0xFF);
+        Port::<u8>::new(0xA1).write(0xFF);
+    }
+    serial_println!("[pic    ] legacy 8259 PIC disabled (all lines masked 0xFF/0xFF)");
+}
+
+pub fn init_apic(phys_offset: u64) -> bool {
+    let madt_opt = crate::acpi::MADT.lock().clone();
+    let madt = match madt_opt {
+        Some(m) => m,
+        None => {
+            serial_println!("[apic   ] no MADT found, falling back to legacy 8259 PIC");
+            return false;
+        }
+    };
+
+    let lapic_virt = phys_offset + madt.lapic_paddr;
+    let ioapic_virt = phys_offset + madt.ioapic_paddr;
+
+    unsafe {
+        let lapic = crate::drivers::apic::LocalApic::new(lapic_virt);
+        lapic.init(0xFF); // Spurious vector 0xFF
+
+        let mut ioapic = crate::drivers::apic::IoApic::new(ioapic_virt);
+        ioapic.init();
+
+        // Disable legacy 8259 PIC
+        disable_pic();
+
+        // Route IRQ1 (Keyboard) -> vector 33
+        let (kb_gsi, kb_flags) = madt.irq_to_gsi(1);
+        ioapic.route_gsi(kb_gsi, InterruptIndex::Keyboard.as_u8(), 0, kb_flags);
+
+        // Route IRQ12 (Mouse) -> vector 44
+        let (mouse_gsi, mouse_flags) = madt.irq_to_gsi(12);
+        ioapic.route_gsi(mouse_gsi, InterruptIndex::Mouse.as_u8(), 0, mouse_flags);
+
+        // Calibrate and start Local APIC periodic timer for 100 Hz on vector 32
+        lapic.start_periodic_timer(InterruptIndex::Timer.as_u8(), 100);
+
+        *crate::drivers::apic::lapic::LOCAL_APIC.lock() = Some(lapic);
+        *crate::drivers::apic::ioapic::IO_APIC.lock() = Some(ioapic);
+        crate::drivers::apic::lapic::set_apic_active(true);
+    }
+
+    serial_println!("[apic   ] Local APIC & IOAPIC fully initialized and active!");
+    true
+}
+
 pub fn unmask_input() {
-    // Master 0xF8 = 1111_1000: IRQ0 (timer) + IRQ1 (keyboard) + IRQ2
-    // (cascade) unmasked; IRQ3..7 still masked. The bit2 clear is the
-    // fix — without it no slave IRQ, IRQ12 included, can reach the CPU.
-    // Slave 0xEF = 1110_1111: only IRQ12 (mouse) unmasked.
-    // SAFETY: same ownership as `init_pic`; pure mask write, no side
-    // effects beyond (de)livering already-pending requests.
-    unsafe { PICS.lock().write_masks(0xF8, 0xEF) };
+    if crate::drivers::apic::lapic::is_apic_active() {
+        serial_println!("[apic   ] input lines unmasked via IOAPIC");
+    } else {
+        unsafe { PICS.lock().write_masks(0xF8, 0xEF) };
+    }
 }
 
 /// Reads both PIC mask registers back **off the hardware** and logs them
@@ -216,6 +277,31 @@ pub fn log_masks(context: &str) {
 }
 
 // ---------------------------- CPU exceptions -----------------------------
+
+extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
+    serial_println!("[irq    ] EXCEPTION: DIVIDE ERROR (#DE)\n{stack_frame:#?}");
+    panic!("divide error");
+}
+
+extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+    serial_println!("[irq    ] EXCEPTION: INVALID OPCODE (#UD)\n{stack_frame:#?}");
+    panic!("invalid opcode");
+}
+
+extern "x86-interrupt" fn invalid_tss_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    serial_println!("[irq    ] EXCEPTION: INVALID TSS (#TS, error {error_code:#x})\n{stack_frame:#?}");
+    panic!("invalid tss");
+}
+
+extern "x86-interrupt" fn segment_not_present_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    serial_println!("[irq    ] EXCEPTION: SEGMENT NOT PRESENT (#NP, error {error_code:#x})\n{stack_frame:#?}");
+    panic!("segment not present");
+}
+
+extern "x86-interrupt" fn stack_segment_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    serial_println!("[irq    ] EXCEPTION: STACK SEGMENT FAULT (#SS, error {error_code:#x})\n{stack_frame:#?}");
+    panic!("stack segment fault");
+}
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     // Recoverable by design (a debugger may be attached) — log and continue.
@@ -303,50 +389,75 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     crate::sched::timer_tick(timer::ticks());
 
     // Phase 3: publish the tick to the event queue so the desktop loop
-    // can drive animations/heartbeat off `Event::Tick` instead of
-    // re-polling the counter every pass (see `crate::event` docs).
+    // can drive animations/heartbeat off `Event::Tick`.
     event::push(event::Event::Tick(timer::ticks()));
 
-    // One-time proof line: the log shows the very first delivered tick
-    // without flooding the capture at 100 Hz.
     static FIRST_TICK: AtomicBool = AtomicBool::new(false);
     if !FIRST_TICK.swap(true, Ordering::Relaxed) {
-        serial_println!("[irq    ] first PIT tick delivered (IRQ0 -> vector 32)");
+        if crate::drivers::apic::lapic::is_apic_active() {
+            serial_println!("[irq    ] first LAPIC timer tick delivered (vector 32)");
+        } else {
+            serial_println!("[irq    ] first PIT tick delivered (IRQ0 -> vector 32)");
+        }
     }
 
-    // SAFETY: end-of-interrupt tells both PICs this interrupt is finished —
-    // without it, no further IRQs are delivered. The offset matches the
-    // remap in `init_pic`, and this handler only ever runs for IRQ0.
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8())
-    };
+    if crate::drivers::apic::lapic::is_apic_active() {
+        crate::drivers::apic::lapic::end_of_interrupt();
+    } else {
+        unsafe {
+            PICS.lock()
+                .notify_end_of_interrupt(InterruptIndex::Timer.as_u8())
+        };
+    }
 }
 
-/// IRQ1 (vector 33): one byte is waiting in the controller's data
-/// register — hand it to the scancode decoder, then acknowledge the PIC.
+/// IRQ1 (vector 33): one byte is waiting in the controller's data register.
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     input::keyboard::handle_irq();
 
-    // SAFETY: EOI for IRQ1 (master vector 33) — matches the remap in
-    // `init_pic`; without it the master PIC would mask the line forever.
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8())
-    };
+    if crate::drivers::apic::lapic::is_apic_active() {
+        crate::drivers::apic::lapic::end_of_interrupt();
+    } else {
+        unsafe {
+            PICS.lock()
+                .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8())
+        };
+    }
 }
 
-/// IRQ12 (vector 44): one byte of a mouse packet is ready. The slave
-/// PIC's IRQ12 is *cascaded* through master IRQ2 — `notify_end_of_interrupt`
-/// knows that and EOIs both chips for vectors >= 40.
+/// IRQ12 (vector 44): one byte of a mouse packet is ready.
 extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
     input::mouse::handle_irq();
 
-    // SAFETY: EOI for IRQ12 (slave vector 44). `notify_end_of_interrupt`
-    // sees a slave-range vector and EOIs the slave PIC, then the master's
-    // cascade line (IRQ2) — required or no further slave IRQ fires.
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Mouse.as_u8())
-    };
+    if crate::drivers::apic::lapic::is_apic_active() {
+        crate::drivers::apic::lapic::end_of_interrupt();
+    } else {
+        unsafe {
+            PICS.lock()
+                .notify_end_of_interrupt(InterruptIndex::Mouse.as_u8())
+        };
+    }
 }
+
+/// Vector 0xFF: Spurious interrupt handler for Local APIC.
+/// Per Intel SDM Vol 3A §10.9, no EOI is generated for spurious interrupts.
+extern "x86-interrupt" fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    // No EOI needed
+}
+
+/// Generic handler for unmapped/unregistered hardware interrupts (vectors 32..254).
+extern "x86-interrupt" fn generic_unhandled_irq_handler(_stack_frame: InterruptStackFrame) {
+    static COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let c = COUNT.fetch_add(1, Ordering::Relaxed);
+    if c < 5 {
+        serial_println!("[irq    ] generic unhandled IRQ delivered (count={})", c + 1);
+    }
+    if crate::drivers::apic::lapic::is_apic_active() {
+        crate::drivers::apic::lapic::end_of_interrupt();
+    } else {
+        unsafe {
+            PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
+        }
+    }
+}
+

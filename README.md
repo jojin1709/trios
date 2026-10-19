@@ -89,11 +89,23 @@ TriOS has completed **Phase 0 through Phase 22**:
 | **Phase 21** | Real Processes & Ring 3 | **Done** | Per-process PML4 page tables (shared kernel half, isolated user half), Ring 3 execution via `iretq`/`sysretq`, full syscall suite (`exit`, `write`, `read`, `yield`, `uptime`, `getpid`, `sleep_ms`, `mmap`, `munmap`, `open`, `close`), strict user pointer validation, process table & teardown, user fault isolation, `ps` & `kill` commands |
 | **Phase 22** | VFS & Persistent Writes | **Done** | Unified Virtual File System (`/` ramfs, `/disk` persistent FAT), AHCI DMA sector writing (`write_sectors`), FAT12/16/32 persistent write engine (create, write, append, delete, mkdir, rename), Editor Save & Files Explorer persistence, `fsck-lite` consistency checker |
 | **Phase 23** | Cleanup, Hardening, Docs | **Done** | UI feature audit (real brightness dimming & DND, cosmetic preview tags), host parser test suite (`cargo test`), Ring 3 syscall fuzz test (`fuzz.elf`), architecture docs (`memory-map.md`, `syscall-table.md`, `boot-sequence.md`) |
+| **Phase 24** | Userland SDK & Ring 3 Shell | **Done** | Safe `libtrios` SDK, bump allocator, `trios_main!`, `init` (PID 1) spawner, Ring 3 `sh` with interactive prompt, CLI toolchain (`hello`, `ls`, `cat`, `echo`, `ps`, `clear`), pipes `|`, redirection `>` |
+| **Phase 25** | Local APIC & IOAPIC Controller | **Done** | ACPI MADT zero-heap parser, Local APIC timer (100 Hz periodic calibration), lockless atomic EOI, I/O APIC indirect register routing (`IOREGSEL`/`IOWIN`), legacy 8259 PIC disable, architectural CPU exception matrix (#DE, #UD, #TS, #NP, #SS) |
 
 ---
 
 ## Key Features
 
+- **Local APIC & IOAPIC Interrupt Controller (Phase 25)**: Modern, SMP-ready interrupt subsystem replacing legacy 8259 PIC:
+  - **Zero-Heap ACPI MADT Parser**: Allocation-free ACPI table parser (`drivers/apic/madt.rs`) discovering Local APIC physical address, I/O APIC physical base, GSI ranges, and Interrupt Source Overrides (ISOs) before early heap initialization.
+  - **Local APIC Driver**: Calibrates hardware periodic timer to 100 Hz (`drivers/apic/lapic.rs`) via PIT channel 0 latch countdown without depending on interrupts or PIT ticks, programs Spurious Interrupt Vector register (`0xFF`), and clears Task Priority Register.
+  - **Lockless Atomic EOI**: Ultra-fast End of Interrupt delivery storing virtual base in an atomic register pointer (`LAPIC_BASE_VIRT`), eliminating spinlock contention and reentrancy deadlocks in high-frequency interrupt handlers.
+  - **I/O APIC Redirection Routing**: Indirect MMIO register programming (`IOREGSEL`/`IOWIN`) routing ISA IRQ1 (Keyboard) and IRQ12 (Mouse) to IDT vectors 33 and 44 with polarity and trigger mode preservation.
+  - **Complete Architectural Exception Matrix**: IDT populated with handlers for all architectural faults (#DE, #UD, #TS, #NP, #SS, #GP, #PF, #DF) plus safe catch-all acknowledgment for vectors 32..254, ensuring rock-solid fault isolation.
+- **Userland SDK & Ring 3 Shell (Phase 24)**: Complete userland development kit and modular Ring 3 utilities:
+  - **`libtrios` Userland Crate**: Zero-dependency `no_std` library providing safe wrappers for syscalls 0 through 18, bump allocator, panic handler, formatted I/O (`print!`, `println!`), and entry macro (`trios_main!`).
+  - **Core Ring 3 Binaries**: Separate static non-PIE `ET_EXEC` binaries (`user/`) linked at base `0x400000`: `init` (PID 1 orchestrator), `sh` (interactive command prompt), `hello`, `ls`, `cat`, `echo`, `ps`, and `clear`.
+  - **Unix-style Pipes & Redirection**: Kernel IPC pipe buffers (`sys_pipe`, syscall 13) and file descriptor redirection (`sys_dup2`, syscall 14), enabling pipelines (`ps | cat`) and output file redirection (`echo hi > /test.txt`).
 - **Unified Virtual File System & Persistent Writes (Phase 22)**: Complete storage stack with cross-filesystem dispatch and persistent block writing:
   - **Unified VFS Hierarchy**: Mount architecture dispatching `/` to fast in-memory `ramfs` and `/disk` to the active persistent FAT filesystem on SATA storage. All path lookups, directories, and file streams resolve transparently across filesystem boundaries.
   - **AHCI DMA Sector Writing**: Implemented `write_sectors` in `drivers/ahci.rs` utilizing ATA command `ATA_CMD_WRITE_DMA_EXT` (`0x35`), setting the write transfer bit (bit 6) in the AHCI Command Header, staging data through physically contiguous DMA buffers, and awaiting PxCI hardware completion.
@@ -329,6 +341,9 @@ Detailed boot sequence documentation and stage breakdown can be found in [`docs/
 - [x] **Phase 22**: VFS & Persistent Writes (Unified VFS `/` ramfs & `/disk` FAT, AHCI sector write DMA, multi-FAT write engine, `fsck-lite`)
 - [x] **Phase 23**: Cleanup, Hardening, Docs (UI feature audit, real brightness dimming & DND, host parser tests, Ring 3 syscall fuzzing, architecture docs)
 - [x] **Phase 24**: Userland SDK & Ring 3 Applications (`libtrios` no_std crate with safe syscall wrappers, bump allocator, `print!`/`println!`, `/bin/init` PID 1 init process, `/bin/sh` interactive shell with pipes `|`, redirection `>`, builtins `cd`/`exit`, and userland utility suite `hello`, `ls`, `cat`, `echo`, `ps`, `clear`)
+- [x] **Phase 25**: Interrupt Controller Upgrade (Local APIC & IOAPIC) (ACPI MADT zero-heap parser, Local APIC periodic 100 Hz timer with PIT countdown calibration, lockless atomic EOI, I/O APIC indirect register routing, legacy 8259 PIC disable, complete architectural exception matrix)
+- [ ] **Phase 26**: Networking v2 (DHCP client, TCP dynamic windowing, socket API abstractions)
+- [ ] **Phase 27**: TLS + Modern Browser v2 (Pure-Rust embedded TLS engine, HTTPS support, expanded browser capabilities)
 
 ---
 

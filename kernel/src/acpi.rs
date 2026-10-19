@@ -36,6 +36,7 @@ pub struct AcpiInfo {
 }
 
 pub static ACPI: Mutex<Option<AcpiInfo>> = Mutex::new(None);
+pub static MADT: Mutex<Option<crate::drivers::apic::MadtInfo>> = Mutex::new(None);
 
 /// Initializes the ACPI subsystem from the RSDP physical address passed by UEFI.
 pub fn init(rsdp_phys_opt: Option<u64>, phys_offset: VirtAddr) {
@@ -211,27 +212,12 @@ fn parse_table(
     } else if sig == b"APIC" {
         // MADT (Multiple APIC Description Table)
         *has_madt = true;
-        let ptr = virt as *const u8;
         let len = hdr.length as usize;
-        let mut offset = 44; // Skip header + Local APIC Addr (4) + Flags (4)
-        let mut count = 0;
-        while offset + 2 <= len {
-            let entry_type = unsafe { *ptr.add(offset) };
-            let entry_len = unsafe { *ptr.add(offset + 1) } as usize;
-            if entry_len == 0 {
-                break;
+        if let Some(info) = unsafe { crate::drivers::apic::parse_madt(virt as u64, len) } {
+            if info.cpu_cores > 0 {
+                *cpu_cores = info.cpu_cores;
             }
-            // Type 0: Processor Local APIC
-            if entry_type == 0 && offset + 4 < len {
-                let flags = unsafe { core::ptr::read_unaligned(ptr.add(offset + 4) as *const u32) };
-                if (flags & 1) != 0 { // Enabled
-                    count += 1;
-                }
-            }
-            offset += entry_len;
-        }
-        if count > 0 {
-            *cpu_cores = count;
+            *MADT.lock() = Some(info);
         }
     }
 }

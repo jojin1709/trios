@@ -1,6 +1,7 @@
 //! Hardware device drivers for TriOS.
 
 pub mod ahci;
+pub mod apic;
 pub mod e1000;
 pub mod pci;
 
