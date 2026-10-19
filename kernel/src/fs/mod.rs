@@ -129,6 +129,7 @@ const CAT_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cat.elf"));
 const ECHO_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/echo.elf"));
 const PS_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ps.elf"));
 const CLEAR_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/clear.elf"));
+const FETCH_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fetch.elf"));
 
 impl FileSystem {
     /// A ramfs pre-seeded with demo content, system binaries, and user files.
@@ -141,7 +142,8 @@ impl FileSystem {
              This filesystem lives entirely in RAM — nothing here survives a reboot.\n\
              Phase 4: File Explorer, Text Editor, Terminal.\n\
              Phase 8: Standalone ELF Executable Loader.\n\
-             Phase 24: Userland SDK + init + shell as Ring 3 user programs.",
+             Phase 24: Userland SDK + init + shell as Ring 3 user programs.\n\
+             Phase 26: Networking v2 (DHCP client, TCP dynamic windowing, BSD sockets).",
         );
         fs.write(
             "/notes/hello.txt",
@@ -149,7 +151,7 @@ impl FileSystem {
         );
         fs.write(
             "/notes/todo.txt",
-            "- File Explorer\n- Text Editor\n- Terminal\n- [x] in-memory VFS\n- [x] ELF64 Loader\n- [x] Userland SDK & Shell",
+            "- File Explorer\n- Text Editor\n- Terminal\n- [x] in-memory VFS\n- [x] ELF64 Loader\n- [x] Userland SDK & Shell\n- [x] Networking v2 & BSD Sockets",
         );
         fs.write_bytes("/bin/init", INIT_ELF);
         fs.write_bytes("/bin/sh", SH_ELF);
@@ -159,6 +161,7 @@ impl FileSystem {
         fs.write_bytes("/bin/echo", ECHO_ELF);
         fs.write_bytes("/bin/ps", PS_ELF);
         fs.write_bytes("/bin/clear", CLEAR_ELF);
+        fs.write_bytes("/bin/fetch", FETCH_ELF);
         fs.write_bytes("/bin/hello.elf", HELLO_ELF);
         fs.write_bytes("/bin/fault.elf", &crate::fs::elf::create_fault_elf());
         fs.write_bytes("/bin/fuzz.elf", &crate::fs::elf::create_fuzz_elf());

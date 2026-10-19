@@ -36,6 +36,7 @@ pub enum FdKind {
     File { path: String, offset: usize, writable: bool },
     PipeRead { pipe_id: usize },
     PipeWrite { pipe_id: usize },
+    Socket { sock_id: usize },
 }
 
 #[derive(Debug, Clone)]

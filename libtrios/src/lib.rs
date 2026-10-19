@@ -196,6 +196,82 @@ pub fn chdir(path: &str) -> isize {
     res as isize
 }
 
+/// Creates an unbound socket endpoint. Returns a file descriptor or -1 on error.
+pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> isize {
+    let res = unsafe { syscall3(SYS_SOCKET, domain as usize, sock_type as usize, protocol as usize) };
+    res as isize
+}
+
+/// Connects socket `fd` to the specified IPv4 `ip` and `port`. Returns 0 on success or -1 on error.
+pub fn connect(fd: usize, ip: [u8; 4], port: u16) -> isize {
+    let sockaddr = SockAddrIn {
+        sin_family: AF_INET as u16,
+        sin_port: port.to_be(),
+        sin_addr: ip,
+        sin_zero: [0; 8],
+    };
+    let res = unsafe {
+        syscall3(
+            SYS_CONNECT,
+            fd,
+            &sockaddr as *const _ as usize,
+            core::mem::size_of::<SockAddrIn>(),
+        )
+    };
+    res as isize
+}
+
+pub mod net {
+    use super::*;
+
+    pub struct TcpStream {
+        pub fd: usize,
+    }
+
+    impl TcpStream {
+        pub fn connect(ip: [u8; 4], port: u16) -> Result<Self, &'static str> {
+            let fd = socket(AF_INET, SOCK_STREAM, 0);
+            if fd < 0 {
+                return Err("Failed to create socket");
+            }
+            let fd = fd as usize;
+            if connect(fd, ip, port) < 0 {
+                let _ = close(fd);
+                return Err("Failed to connect to host");
+            }
+            Ok(Self { fd })
+        }
+
+        pub fn write(&mut self, buf: &[u8]) -> Result<usize, &'static str> {
+            let n = write(self.fd, buf);
+            if n < 0 {
+                Err("Socket write error")
+            } else {
+                Ok(n as usize)
+            }
+        }
+
+        pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, &'static str> {
+            let n = read(self.fd, buf);
+            if n < 0 {
+                Err("Socket read error")
+            } else {
+                Ok(n as usize)
+            }
+        }
+
+        pub fn close(self) {
+            let _ = close(self.fd);
+        }
+    }
+
+    impl Drop for TcpStream {
+        fn drop(&mut self) {
+            let _ = close(self.fd);
+        }
+    }
+}
+
 /// Helper trampoline to parse argc/argv and call application main.
 pub unsafe fn entry_trampoline(argc: usize, argv: *const *const u8, f: fn(&[&str]) -> i32) -> ! {
     let mut args_buf = [""; 16];

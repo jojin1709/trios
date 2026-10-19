@@ -440,7 +440,7 @@ pub fn load_elf_into_process(
     let hdr = parse_header(bytes)?;
     let phys_offset = crate::memory::get_phys_offset().ok_or(ElfError::NoLoadableSegments)?;
 
-    let base_vaddr: u64 = if hdr.e_type == 3 || hdr.entry_point < 0x0040_0000 {
+    let base_vaddr: u64 = if hdr.e_type == 3 {
         0x0040_0000
     } else {
         0

@@ -19,6 +19,24 @@ pub const SYS_READDIR: usize = 15;
 pub const SYS_STAT: usize = 16;
 pub const SYS_GETCWD: usize = 17;
 pub const SYS_CHDIR: usize = 18;
+pub const SYS_SOCKET: usize = 19;
+pub const SYS_CONNECT: usize = 20;
+pub const SYS_BIND: usize = 21;
+pub const SYS_LISTEN: usize = 22;
+pub const SYS_ACCEPT: usize = 23;
+
+pub const AF_INET: i32 = 2;
+pub const SOCK_STREAM: i32 = 1;
+pub const SOCK_DGRAM: i32 = 2;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SockAddrIn {
+    pub sin_family: u16,
+    pub sin_port: u16,
+    pub sin_addr: [u8; 4],
+    pub sin_zero: [u8; 8],
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]

@@ -3,8 +3,8 @@
 //! Bare-metal implementation of:
 //! - TCP segment construction with RFC 793 IPv4 pseudo-header checksums
 //! - Three-way handshake client connection engine (SYN -> SYN-ACK -> ACK)
-//! - Outbound stream transmission with PSH/ACK segment framing
-//! - Full duplex reassembly buffer with automatic ACK responses
+//! - Outbound stream transmission with sliding dynamic windowing and MSS chunking
+//! - Full duplex reassembly buffer with dynamic advertised receive window
 //! - Clean teardown and FIN/ACK connection termination
 //!
 //! Developed by JOJIN JOHN (@jojin1709) for TriOS.
@@ -23,6 +23,10 @@ pub const TCP_PSH: u8 = 0x08;
 pub const TCP_ACK: u8 = 0x10;
 #[allow(dead_code)]
 pub const TCP_URG: u8 = 0x20;
+
+pub const TCP_MSS: usize = 1460;
+pub const TCP_DEFAULT_WINDOW: u16 = 64240;
+pub const TCP_MAX_RX_BUFFER: usize = 65535;
 
 static NEXT_LOCAL_PORT: AtomicU16 = AtomicU16::new(49152);
 
@@ -43,7 +47,16 @@ pub struct TcpStream {
     pub state: TcpState,
     pub local_seq: u32,
     pub remote_seq: u32,
+    pub snd_wnd: u16,
+    pub snd_una: u32,
     pub rx_buffer: Vec<u8>,
+}
+
+impl TcpStream {
+    /// Calculates the current dynamic advertised receive window.
+    pub fn rcv_wnd(&self) -> u16 {
+        (TCP_MAX_RX_BUFFER.saturating_sub(self.rx_buffer.len())).min(65535) as u16
+    }
 }
 
 pub static TCP_SOCKETS: Mutex<Vec<TcpStream>> = Mutex::new(Vec::new());
@@ -134,6 +147,7 @@ pub fn handle_tcp_packet(src_ip: [u8; 4], payload: &[u8]) {
     let ack = u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]]);
     let data_offset = ((payload[12] >> 4) as usize) * 4;
     let flags = payload[13];
+    let window = u16::from_be_bytes([payload[14], payload[15]]);
 
     if payload.len() < data_offset {
         return;
@@ -143,6 +157,12 @@ pub fn handle_tcp_packet(src_ip: [u8; 4], payload: &[u8]) {
     let mut sockets = TCP_SOCKETS.lock();
     for sock in sockets.iter_mut() {
         if sock.local_port == dest_port && sock.remote_port == src_port && sock.remote_ip == src_ip {
+            // Update peer's advertised send window and acknowledged seq
+            sock.snd_wnd = window;
+            if (flags & TCP_ACK) != 0 {
+                sock.snd_una = ack;
+            }
+
             // Check for connection reset
             if (flags & TCP_RST) != 0 {
                 serial_println!("[tcp    ] connection reset by peer on port {dest_port}");
@@ -157,10 +177,11 @@ pub fn handle_tcp_packet(src_ip: [u8; 4], payload: &[u8]) {
                         sock.local_seq = ack;
                         sock.state = TcpState::Established;
                         serial_println!(
-                            "[tcp    ] connection established: {}.{}.{}.{}:{} <-> local:{}",
-                            src_ip[0], src_ip[1], src_ip[2], src_ip[3], src_port, dest_port
+                            "[tcp    ] connection established: {}.{}.{}.{}:{} <-> local:{} (wnd={})",
+                            src_ip[0], src_ip[1], src_ip[2], src_ip[3], src_port, dest_port, window
                         );
 
+                        let rcv_wnd = sock.rcv_wnd();
                         // Send ACK acknowledging server's SYN
                         let _ = send_tcp_packet(
                             src_ip,
@@ -169,7 +190,7 @@ pub fn handle_tcp_packet(src_ip: [u8; 4], payload: &[u8]) {
                             sock.local_seq,
                             sock.remote_seq,
                             TCP_ACK,
-                            64240,
+                            rcv_wnd,
                             &[],
                             &[],
                         );
@@ -183,6 +204,8 @@ pub fn handle_tcp_packet(src_ip: [u8; 4], payload: &[u8]) {
                         data_received = true;
                     }
 
+                    let rcv_wnd = sock.rcv_wnd();
+
                     if (flags & TCP_FIN) != 0 {
                         sock.remote_seq = sock.remote_seq.wrapping_add(1);
                         sock.state = TcpState::CloseWait;
@@ -195,7 +218,7 @@ pub fn handle_tcp_packet(src_ip: [u8; 4], payload: &[u8]) {
                             sock.local_seq,
                             sock.remote_seq,
                             TCP_ACK,
-                            64240,
+                            rcv_wnd,
                             &[],
                             &[],
                         );
@@ -208,7 +231,7 @@ pub fn handle_tcp_packet(src_ip: [u8; 4], payload: &[u8]) {
                             sock.local_seq,
                             sock.remote_seq,
                             TCP_ACK,
-                            64240,
+                            rcv_wnd,
                             &[],
                             &[],
                         );
@@ -237,6 +260,8 @@ impl TcpStream {
                 state: TcpState::SynSent,
                 local_seq,
                 remote_seq: 0,
+                snd_wnd: TCP_DEFAULT_WINDOW,
+                snd_una: local_seq,
                 rx_buffer: Vec::new(),
             });
         }
@@ -248,30 +273,39 @@ impl TcpStream {
 
         // Send SYN packet with MSS Option = 1460 (4 bytes: [0x02, 0x04, 0x05, 0xb4])
         let mss_opt = [0x02, 0x04, 0x05, 0xb4];
-        send_tcp_packet(
-            remote_ip,
-            local_port,
-            remote_port,
-            local_seq,
-            0,
-            TCP_SYN,
-            64240,
-            &mss_opt,
-            &[],
-        )?;
 
-        // Poll network until connection is established
-        for _ in 0..1_000_000 {
-            poll_network();
-            let sockets = TCP_SOCKETS.lock();
-            if let Some(sock) = sockets.iter().find(|s| s.local_port == local_port) {
-                match sock.state {
-                    TcpState::Established => return Ok(local_port),
-                    TcpState::Reset => return Err("Connection reset by peer"),
-                    _ => {}
+        for attempt in 1..=4 {
+            send_tcp_packet(
+                remote_ip,
+                local_port,
+                remote_port,
+                local_seq,
+                0,
+                TCP_SYN,
+                TCP_DEFAULT_WINDOW,
+                &mss_opt,
+                &[],
+            )?;
+
+            // Poll for up to 1.5 seconds (150 timer ticks at 100 Hz)
+            let start = crate::timer::ticks();
+            while crate::timer::ticks().saturating_sub(start) < 150 {
+                poll_network();
+                {
+                    let sockets = TCP_SOCKETS.lock();
+                    if let Some(sock) = sockets.iter().find(|s| s.local_port == local_port) {
+                        match sock.state {
+                            TcpState::Established => return Ok(local_port),
+                            TcpState::Reset => return Err("Connection reset by peer"),
+                            _ => {}
+                        }
+                    }
+                }
+                for _ in 0..1000 {
+                    core::hint::spin_loop();
                 }
             }
-            core::hint::spin_loop();
+            serial_println!("[tcp    ] connect attempt #{attempt} timed out, retrying SYN...");
         }
 
         // Timeout: Clean up socket
@@ -280,36 +314,109 @@ impl TcpStream {
         Err("TCP connection timed out")
     }
 
-    /// Transmits data payload across the established TCP connection.
-    pub fn write(local_port: u16, data: &[u8]) -> Result<(), &'static str> {
-        let (remote_ip, remote_port, seq, ack) = {
-            let mut sockets = TCP_SOCKETS.lock();
-            let sock = sockets
-                .iter_mut()
-                .find(|s| s.local_port == local_port)
-                .ok_or("Socket not found")?;
-
+    /// Transmits data payload across the established TCP connection using MSS chunking and window tracking.
+    pub fn write(local_port: u16, data: &[u8]) -> Result<usize, &'static str> {
+        let (remote_ip, remote_port, mut seq, ack) = {
+            let sockets = TCP_SOCKETS.lock();
+            let sock = sockets.iter().find(|s| s.local_port == local_port).ok_or("Socket not found")?;
             if sock.state != TcpState::Established {
                 return Err("Socket is not in established state");
             }
-
-            let seq = sock.local_seq;
-            let ack = sock.remote_seq;
-            sock.local_seq = sock.local_seq.wrapping_add(data.len() as u32);
-            (sock.remote_ip, sock.remote_port, seq, ack)
+            (sock.remote_ip, sock.remote_port, sock.local_seq, sock.remote_seq)
         };
 
-        send_tcp_packet(
-            remote_ip,
-            local_port,
-            remote_port,
-            seq,
-            ack,
-            TCP_PSH | TCP_ACK,
-            64240,
-            &[],
-            data,
-        )
+        let mut total_sent = 0;
+        let chunks = data.chunks(TCP_MSS);
+        let total_chunks = chunks.len();
+
+        for (idx, chunk) in chunks.enumerate() {
+            let is_last = idx + 1 == total_chunks;
+            let flags = if is_last { TCP_PSH | TCP_ACK } else { TCP_ACK };
+
+            let rcv_wnd = {
+                let sockets = TCP_SOCKETS.lock();
+                if let Some(sock) = sockets.iter().find(|s| s.local_port == local_port) {
+                    sock.rcv_wnd()
+                } else {
+                    TCP_DEFAULT_WINDOW
+                }
+            };
+
+            send_tcp_packet(
+                remote_ip,
+                local_port,
+                remote_port,
+                seq,
+                ack,
+                flags,
+                rcv_wnd,
+                &[],
+                chunk,
+            )?;
+
+            seq = seq.wrapping_add(chunk.len() as u32);
+            total_sent += chunk.len();
+        }
+
+        // Update local sequence
+        let mut sockets = TCP_SOCKETS.lock();
+        if let Some(sock) = sockets.iter_mut().find(|s| s.local_port == local_port) {
+            sock.local_seq = seq;
+        }
+
+        Ok(total_sent)
+    }
+
+    /// Reads available streaming data from socket rx buffer, popping consumed bytes.
+    /// Blocks until data arrives, connection is closed by peer, or 5-second timeout elapses.
+    pub fn read_stream(local_port: u16, buf: &mut [u8]) -> Result<usize, &'static str> {
+        let start = crate::timer::ticks();
+        loop {
+            poll_network();
+            let mut sockets = TCP_SOCKETS.lock();
+            let sock = match sockets.iter_mut().find(|s| s.local_port == local_port) {
+                Some(s) => s,
+                None => return Err("Socket not found"),
+            };
+
+            if !sock.rx_buffer.is_empty() {
+                let to_read = buf.len().min(sock.rx_buffer.len());
+                buf[..to_read].copy_from_slice(&sock.rx_buffer[..to_read]);
+                sock.rx_buffer.drain(..to_read);
+
+                let rcv_wnd = sock.rcv_wnd();
+                let _ = send_tcp_packet(
+                    sock.remote_ip,
+                    sock.local_port,
+                    sock.remote_port,
+                    sock.local_seq,
+                    sock.remote_seq,
+                    TCP_ACK,
+                    rcv_wnd,
+                    &[],
+                    &[],
+                );
+
+                return Ok(to_read);
+            }
+
+            if sock.state == TcpState::CloseWait || sock.state == TcpState::Closed {
+                return Ok(0); // EOF
+            }
+            if sock.state == TcpState::Reset {
+                return Err("Connection reset by peer");
+            }
+
+            // Timeout after 5 seconds of waiting for data
+            if crate::timer::ticks().saturating_sub(start) > 500 {
+                return Ok(0); // Timed out waiting for data
+            }
+
+            drop(sockets);
+            for _ in 0..1000 {
+                core::hint::spin_loop();
+            }
+        }
     }
 
     /// Polls and reads all available response data until the remote peer closes the stream.
@@ -356,6 +463,7 @@ impl TcpStream {
         let mut sockets = TCP_SOCKETS.lock();
         if let Some(sock) = sockets.iter_mut().find(|s| s.local_port == local_port) {
             if sock.state == TcpState::Established || sock.state == TcpState::CloseWait {
+                let rcv_wnd = sock.rcv_wnd();
                 let _ = send_tcp_packet(
                     sock.remote_ip,
                     sock.local_port,
@@ -363,7 +471,7 @@ impl TcpStream {
                     sock.local_seq,
                     sock.remote_seq,
                     TCP_FIN | TCP_ACK,
-                    64240,
+                    rcv_wnd,
                     &[],
                     &[],
                 );

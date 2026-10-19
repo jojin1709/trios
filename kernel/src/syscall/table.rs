@@ -29,6 +29,20 @@ pub const SYS_READDIR: usize = 15;
 pub const SYS_STAT: usize = 16;
 pub const SYS_GETCWD: usize = 17;
 pub const SYS_CHDIR: usize = 18;
+pub const SYS_SOCKET: usize = 19;
+pub const SYS_CONNECT: usize = 20;
+pub const SYS_BIND: usize = 21;
+pub const SYS_LISTEN: usize = 22;
+pub const SYS_ACCEPT: usize = 23;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SockAddrIn {
+    pub sin_family: u16,
+    pub sin_port: u16,
+    pub sin_addr: [u8; 4],
+    pub sin_zero: [u8; 8],
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -189,6 +203,15 @@ pub extern "C" fn syscall_dispatch(
                         usize::MAX
                     }
                 }
+                FdKind::Socket { sock_id } => {
+                    match crate::net::socket::socket_send(sock_id, slice) {
+                        Ok(n) => n,
+                        Err(err) => {
+                            serial_println!("[syscall] socket write failed: {err}");
+                            usize::MAX
+                        }
+                    }
+                }
                 _ => usize::MAX,
             }
         }
@@ -301,6 +324,20 @@ pub extern "C" fn syscall_dispatch(
                         }
                     }
                     0
+                }
+                FdKind::Socket { sock_id } => {
+                    let mut buf = alloc::vec![0u8; len];
+                    match crate::net::socket::socket_recv(sock_id, &mut buf) {
+                        Ok(n) => {
+                            if n > 0 {
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(buf.as_ptr(), ptr as *mut u8, n);
+                                }
+                            }
+                            n
+                        }
+                        Err(_) => usize::MAX,
+                    }
                 }
                 _ => usize::MAX,
             }
@@ -422,6 +459,9 @@ pub extern "C" fn syscall_dispatch(
                                         pipes[pipe_id] = None;
                                     }
                                 }
+                            }
+                            FdKind::Socket { sock_id } => {
+                                crate::net::socket::socket_close(sock_id);
                             }
                             _ => {}
                         }
@@ -835,6 +875,95 @@ pub extern "C" fn syscall_dispatch(
                 usize::MAX
             }
         }
+
+        SYS_SOCKET => {
+            let domain = arg1 as i32;
+            let sock_type = arg2 as i32;
+            let protocol = arg3 as i32;
+
+            match crate::net::socket::socket_create(domain, sock_type, protocol) {
+                Ok(sock_id) => {
+                    let mut table = PROCESS_TABLE.lock();
+                    let proc = match table.iter_mut().find(|p| p.pid == pid) {
+                        Some(p) => p,
+                        None => {
+                            crate::net::socket::socket_close(sock_id);
+                            return usize::MAX;
+                        }
+                    };
+
+                    let mut target_fd = None;
+                    for i in 3..proc.fd_table.len() {
+                        if proc.fd_table[i].is_none() {
+                            target_fd = Some(i);
+                            break;
+                        }
+                    }
+                    let fd = match target_fd {
+                        Some(idx) => idx,
+                        None => {
+                            let idx = proc.fd_table.len().max(3);
+                            while proc.fd_table.len() < idx {
+                                proc.fd_table.push(None);
+                            }
+                            proc.fd_table.push(None);
+                            idx
+                        }
+                    };
+
+                    proc.fd_table[fd] = Some(ProcessFileDesc {
+                        kind: FdKind::Socket { sock_id },
+                    });
+                    fd
+                }
+                Err(err) => {
+                    serial_println!("[syscall] SYS_SOCKET failed: {err}");
+                    usize::MAX
+                }
+            }
+        }
+
+        SYS_CONNECT => {
+            let fd = arg1;
+            let addr_ptr = arg2;
+            let addrlen = arg3;
+
+            if addr_ptr == 0 || addrlen < core::mem::size_of::<SockAddrIn>() {
+                return usize::MAX;
+            }
+            if pid != 0 && validate_user_buffer(pml4, addr_ptr, core::mem::size_of::<SockAddrIn>(), false).is_err() {
+                return usize::MAX;
+            }
+
+            let sockaddr: SockAddrIn = unsafe { *(addr_ptr as *const SockAddrIn) };
+            let port = u16::from_be(sockaddr.sin_port);
+            let ip = sockaddr.sin_addr;
+
+            let sock_id = {
+                let table = PROCESS_TABLE.lock();
+                let proc = match table.iter().find(|p| p.pid == pid) {
+                    Some(p) => p,
+                    None => return usize::MAX,
+                };
+                match proc.fd_table.get(fd).and_then(|d| d.as_ref()) {
+                    Some(d) => match d.kind {
+                        FdKind::Socket { sock_id } => sock_id,
+                        _ => return usize::MAX,
+                    },
+                    None => return usize::MAX,
+                }
+            };
+
+            match crate::net::socket::socket_connect(sock_id, ip, port) {
+                Ok(()) => 0,
+                Err(err) => {
+                    serial_println!("[syscall] SYS_CONNECT failed: {err}");
+                    usize::MAX
+                }
+            }
+        }
+
+        SYS_BIND | SYS_LISTEN | SYS_ACCEPT => usize::MAX,
 
         _ => {
             serial_println!("[syscall] warning: unhandled syscall #{number}");

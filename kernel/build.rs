@@ -16,7 +16,7 @@ fn main() {
 
     let release_dir = root_dir.join("target").join("x86_64-unknown-none").join("release");
 
-    let bin_names = ["init", "sh", "hello", "ls", "cat", "echo", "ps", "clear"];
+    let bin_names = ["init", "sh", "hello", "ls", "cat", "echo", "ps", "clear", "fetch"];
 
     for name in &bin_names {
         let dest = out_dir.join(format!("{}.elf", name));

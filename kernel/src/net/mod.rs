@@ -9,6 +9,8 @@
 use alloc::vec::Vec;
 pub mod tcp;
 pub mod http;
+pub mod dhcp;
+pub mod socket;
 
 use spin::Mutex;
 use crate::drivers::e1000::E1000;
@@ -182,16 +184,20 @@ pub fn send_ipv4_packet(dest_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Resul
         let stack = NET.lock();
         let src_ip = stack.ip;
 
-        // Determine destination MAC: if on same subnet, lookup dest_ip; else lookup gateway
-        let same_subnet = (dest_ip[0] & stack.subnet[0] == src_ip[0] & stack.subnet[0])
-            && (dest_ip[1] & stack.subnet[1] == src_ip[1] & stack.subnet[1])
-            && (dest_ip[2] & stack.subnet[2] == src_ip[2] & stack.subnet[2]);
+        // Determine destination MAC: if broadcast, send to BROADCAST_MAC
+        let mac = if dest_ip == [255, 255, 255, 255] {
+            BROADCAST_MAC
+        } else {
+            let same_subnet = (dest_ip[0] & stack.subnet[0] == src_ip[0] & stack.subnet[0])
+                && (dest_ip[1] & stack.subnet[1] == src_ip[1] & stack.subnet[1])
+                && (dest_ip[2] & stack.subnet[2] == src_ip[2] & stack.subnet[2]);
 
-        let target_for_mac = if same_subnet { dest_ip } else { stack.gateway };
-        let mac = stack.lookup_arp(target_for_mac).unwrap_or_else(|| {
-            // Default gateway MAC for VirtualBox NAT is 52:54:00:12:35:02
-            [0x52, 0x54, 0x00, 0x12, 0x35, 0x02]
-        });
+            let target_for_mac = if same_subnet { dest_ip } else { stack.gateway };
+            stack.lookup_arp(target_for_mac).unwrap_or_else(|| {
+                // Default gateway MAC for VirtualBox NAT is 52:54:00:12:35:02
+                [0x52, 0x54, 0x00, 0x12, 0x35, 0x02]
+            })
+        };
         (src_ip, mac)
     };
 
@@ -358,7 +364,7 @@ fn handle_arp_packet(src_mac: [u8; 6], payload: &[u8]) {
     }
 }
 
-fn handle_ipv4_packet(_src_mac: [u8; 6], payload: &[u8]) {
+fn handle_ipv4_packet(src_mac: [u8; 6], payload: &[u8]) {
     if payload.len() < 20 {
         return;
     }
@@ -376,6 +382,11 @@ fn handle_ipv4_packet(_src_mac: [u8; 6], payload: &[u8]) {
     let protocol = payload[9];
     let src_ip: [u8; 4] = payload[12..16].try_into().unwrap_or([0; 4]);
     let dest_ip: [u8; 4] = payload[16..20].try_into().unwrap_or([0; 4]);
+
+    // Automatically learn ARP entry from any incoming IPv4 packet
+    if src_ip != [0, 0, 0, 0] && src_mac != [0; 6] {
+        NET.lock().update_arp(src_ip, src_mac);
+    }
 
     let our_ip = NET.lock().ip;
     if dest_ip != our_ip && dest_ip != [255, 255, 255, 255] {
@@ -451,6 +462,8 @@ fn handle_udp_packet(_src_ip: [u8; 4], payload: &[u8]) {
 
     if src_port == 53 || dest_port == 53535 {
         handle_dns_response(data);
+    } else if src_port == 67 || dest_port == 68 {
+        dhcp::handle_dhcp_packet(data);
     }
 }
 

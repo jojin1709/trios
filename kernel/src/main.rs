@@ -308,6 +308,23 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let elapsed = timer::ticks() - before;
     serial_println!("[timer  ] tick test PASS: {elapsed} ticks in ~1 s");
 
+    // Phase 26: Networking v2 — Dynamic Host Configuration Protocol (DHCP)
+    if drivers::E1000.lock().is_some() {
+        serial_println!("[dhcp   ] discovering dynamic IP configuration via DHCP...");
+        if net::dhcp::acquire_lease() {
+            let client = net::dhcp::DHCP_CLIENT.lock().clone();
+            serial_println!(
+                "[dhcp   ] lease bound! IP: {}.{}.{}.{} | Subnet: {}.{}.{}.{} | Gateway: {}.{}.{}.{} | DNS: {}.{}.{}.{}",
+                client.offered_ip[0], client.offered_ip[1], client.offered_ip[2], client.offered_ip[3],
+                client.subnet_mask[0], client.subnet_mask[1], client.subnet_mask[2], client.subnet_mask[3],
+                client.gateway[0], client.gateway[1], client.gateway[2], client.gateway[3],
+                client.dns_server[0], client.dns_server[1], client.dns_server[2], client.dns_server[3],
+            );
+        } else {
+            serial_println!("[dhcp   ] DHCP lease timed out, maintaining static IP 10.0.2.15");
+        }
+    }
+
     // 8. Phase 3 pixels + desktop. Build the double-buffered canvas from
     //    the bootloader's framebuffer (backbuffer allocated on the heap),
     //    then hand control to the desktop event loop — which replaces the
