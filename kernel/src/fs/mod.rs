@@ -120,25 +120,28 @@ fn normalize(path: &str) -> String {
 // FileSystem
 // ---------------------------------------------------------------------------
 
+// Seed embedded userland binaries (Phase 24)
+const INIT_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.elf"));
+const SH_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sh.elf"));
+const HELLO_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hello.elf"));
+const LS_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ls.elf"));
+const CAT_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cat.elf"));
+const ECHO_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/echo.elf"));
+const PS_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ps.elf"));
+const CLEAR_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/clear.elf"));
+
 impl FileSystem {
-    /// A ramfs pre-seeded with demo content, so the File Explorer is
-    /// never staring at an empty window. Seeds (paths are the normalized
-    /// form; parent dirs are created implicitly by `write`):
-    ///
-    /// * `/readme.txt`        — a short welcome note;
-    /// * `/notes/hello.txt`   — proves nested directories work;
-    /// * `/notes/todo.txt`    — a second file in the same directory.
-    /// * `/bin/hello.elf`     — valid ELF64 executable.
+    /// A ramfs pre-seeded with demo content, system binaries, and user files.
     pub fn new() -> Self {
         let mut fs = Self { nodes: Vec::new() };
         // Seed contents are constants, so these writes cannot fail
-        // (write only rejects the root path — see `write`).
         fs.write(
             "/readme.txt",
             "Welcome to TriOS!\n\n\
              This filesystem lives entirely in RAM — nothing here survives a reboot.\n\
              Phase 4: File Explorer, Text Editor, Terminal.\n\
-             Phase 8: Standalone ELF Executable Loader.",
+             Phase 8: Standalone ELF Executable Loader.\n\
+             Phase 24: Userland SDK + init + shell as Ring 3 user programs.",
         );
         fs.write(
             "/notes/hello.txt",
@@ -146,9 +149,17 @@ impl FileSystem {
         );
         fs.write(
             "/notes/todo.txt",
-            "- File Explorer\n- Text Editor\n- Terminal\n- [x] in-memory VFS\n- [x] ELF64 Loader",
+            "- File Explorer\n- Text Editor\n- Terminal\n- [x] in-memory VFS\n- [x] ELF64 Loader\n- [x] Userland SDK & Shell",
         );
-        fs.write_bytes("/bin/hello.elf", &crate::fs::elf::create_sample_elf());
+        fs.write_bytes("/bin/init", INIT_ELF);
+        fs.write_bytes("/bin/sh", SH_ELF);
+        fs.write_bytes("/bin/hello", HELLO_ELF);
+        fs.write_bytes("/bin/ls", LS_ELF);
+        fs.write_bytes("/bin/cat", CAT_ELF);
+        fs.write_bytes("/bin/echo", ECHO_ELF);
+        fs.write_bytes("/bin/ps", PS_ELF);
+        fs.write_bytes("/bin/clear", CLEAR_ELF);
+        fs.write_bytes("/bin/hello.elf", HELLO_ELF);
         fs.write_bytes("/bin/fault.elf", &crate::fs::elf::create_fault_elf());
         fs.write_bytes("/bin/fuzz.elf", &crate::fs::elf::create_fuzz_elf());
         fs
@@ -244,6 +255,12 @@ impl FileSystem {
     pub fn exists(&self, path: &str) -> bool {
         let path = normalize(path);
         path.is_empty() || self.nodes.iter().any(|n| n.path == path)
+    }
+
+    /// Is the node at `path` a directory? Root is always a directory.
+    pub fn is_dir(&self, path: &str) -> bool {
+        let path = normalize(path);
+        path.is_empty() || self.nodes.iter().any(|n| n.path == path && n.is_dir)
     }
 
     /// How many files (directories excluded) exist anywhere in the tree —

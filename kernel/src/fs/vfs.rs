@@ -251,6 +251,30 @@ pub fn exists(path: &str) -> bool {
     }
 }
 
+/// Checks if a path targets an existing directory.
+pub fn is_dir(path: &str) -> bool {
+    let norm = normalize_path(path);
+    if norm == "/" || norm == "/disk" {
+        return true;
+    }
+    if is_disk_path(&norm) {
+        let sub = to_disk_subpath(&norm);
+        let lock = GLOBAL_FAT.lock();
+        if let Some(fat) = lock.as_ref() {
+            if let Ok(entries) = fat.list_dir(&sub, &ahci::read_sector) {
+                return !entries.is_empty();
+            }
+        }
+        false
+    } else {
+        if let Some(fs) = super::GLOBAL_FS.lock().as_ref() {
+            fs.is_dir(&norm)
+        } else {
+            false
+        }
+    }
+}
+
 /// Runs fsck-lite consistency check on the mounted FAT volume.
 pub fn fsck_disk() -> Result<FsckReport, &'static str> {
     let lock = GLOBAL_FAT.lock();

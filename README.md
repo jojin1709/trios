@@ -328,6 +328,7 @@ Detailed boot sequence documentation and stage breakdown can be found in [`docs/
 - [x] **Phase 21**: Real Processes & Ring 3 (Per-process PML4 page tables, Ring 3 `iretq`/`sysretq`, syscall suite, user pointer validation, fault isolation, `ps`, `kill`)
 - [x] **Phase 22**: VFS & Persistent Writes (Unified VFS `/` ramfs & `/disk` FAT, AHCI sector write DMA, multi-FAT write engine, `fsck-lite`)
 - [x] **Phase 23**: Cleanup, Hardening, Docs (UI feature audit, real brightness dimming & DND, host parser tests, Ring 3 syscall fuzzing, architecture docs)
+- [x] **Phase 24**: Userland SDK & Ring 3 Applications (`libtrios` no_std crate with safe syscall wrappers, bump allocator, `print!`/`println!`, `/bin/init` PID 1 init process, `/bin/sh` interactive shell with pipes `|`, redirection `>`, builtins `cd`/`exit`, and userland utility suite `hello`, `ls`, `cat`, `echo`, `ps`, `clear`)
 
 ---
 

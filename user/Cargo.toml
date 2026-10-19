@@ -1,0 +1,40 @@
+[package]
+name = "user"
+version = "0.1.0"
+edition = "2024"
+description = "TriOS Userland Core Utilities"
+
+[dependencies]
+libtrios = { path = "../libtrios" }
+
+[[bin]]
+name = "init"
+path = "src/bin/init.rs"
+
+[[bin]]
+name = "sh"
+path = "src/bin/sh.rs"
+
+[[bin]]
+name = "hello"
+path = "src/bin/hello.rs"
+
+[[bin]]
+name = "ls"
+path = "src/bin/ls.rs"
+
+[[bin]]
+name = "cat"
+path = "src/bin/cat.rs"
+
+[[bin]]
+name = "echo"
+path = "src/bin/echo.rs"
+
+[[bin]]
+name = "ps"
+path = "src/bin/ps.rs"
+
+[[bin]]
+name = "clear"
+path = "src/bin/clear.rs"

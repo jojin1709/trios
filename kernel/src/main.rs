@@ -477,6 +477,18 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
     fs::init_fs(ramfs.clone());
     serial_println!("[fs     ] ramfs ready: {} files", ramfs.file_count());
 
+    // Phase 24: Boot flow — kernel starts /bin/init as PID 1
+    if let Some(init_elf) = fs::vfs::read("/bin/init") {
+        match sched::process::spawn_process_with_args("/bin/init", &init_elf, &[alloc::string::String::from("/bin/init")], None) {
+            Ok(pid) => {
+                serial_println!("[boot   ] spawned /bin/init as PID #{pid}");
+            }
+            Err(e) => {
+                serial_println!("[boot   ] failed to spawn /bin/init: {e}");
+            }
+        }
+    }
+
     // -- demo window 1: Welcome (also the initial focus) ------------------
     let welcome = wm.create_window("Welcome", 80, 60, 400, 200);
     {
@@ -1075,6 +1087,16 @@ fn desktop_run(gfx: &mut graphics::Graphics) -> ! {
         // Vec, and the loop runs at 100 Hz.
         if maybe_close {
             wm.reap();
+        }
+
+        // Drain any pending output from the userland shell PTY queue
+        if apps.terminal.sh_mode {
+            let has_pty_output = !crate::sched::process::SHELL_PTY.lock().output_queue.is_empty();
+            if has_pty_output {
+                apps.terminal.drain_pty();
+                apps.terminal.refresh(&mut wm);
+                dirty = true;
+            }
         }
 
         if dirty {

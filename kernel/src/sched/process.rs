@@ -15,7 +15,7 @@ use crate::memory::{bitmap, virt::PageFlags};
 /// Process ID type.
 pub type ProcessId = u64;
 
-static NEXT_PID: AtomicU64 = AtomicU64::new(10);
+static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 
 /// State of a user process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,15 +29,42 @@ pub enum ProcessState {
 
 /// An open file descriptor entry for a process.
 #[derive(Debug, Clone)]
-pub struct ProcessFileDesc {
-    pub path: String,
-    pub offset: usize,
-    pub writable: bool,
+pub enum FdKind {
+    Stdin,
+    Stdout,
+    Stderr,
+    File { path: String, offset: usize, writable: bool },
+    PipeRead { pipe_id: usize },
+    PipeWrite { pipe_id: usize },
 }
+
+#[derive(Debug, Clone)]
+pub struct ProcessFileDesc {
+    pub kind: FdKind,
+}
+
+pub struct PipeBuffer {
+    pub data: alloc::collections::VecDeque<u8>,
+    pub reader_count: usize,
+    pub writer_count: usize,
+}
+
+pub static PIPES: Mutex<Vec<Option<PipeBuffer>>> = Mutex::new(Vec::new());
+
+pub struct PtyBuffer {
+    pub input_queue: alloc::collections::VecDeque<u8>,
+    pub output_queue: alloc::collections::VecDeque<u8>,
+}
+
+pub static SHELL_PTY: Mutex<PtyBuffer> = Mutex::new(PtyBuffer {
+    input_queue: alloc::collections::VecDeque::new(),
+    output_queue: alloc::collections::VecDeque::new(),
+});
 
 /// A Ring 3 user process with its own PML4 address space.
 pub struct Process {
     pub pid: ProcessId,
+    pub parent_pid: Option<ProcessId>,
     pub name: String,
     pub state: ProcessState,
     /// Physical frame of this process's PML4 page table.
@@ -46,15 +73,20 @@ pub struct Process {
     pub allocated_frames: Vec<PhysFrame<Size4KiB>>,
     /// Per-process open file descriptor table.
     pub fd_table: Vec<Option<ProcessFileDesc>>,
+    /// Current working directory.
+    pub cwd: String,
     /// Next virtual address for user `mmap` allocations.
     pub mmap_next: u64,
     /// Exit code when process terminates.
-    #[allow(dead_code)]
     pub exit_code: i32,
     /// User instruction pointer (entry point or saved RIP).
     pub user_rip: u64,
     /// User stack pointer.
     pub user_rsp: u64,
+    /// User argc passed to entry point.
+    pub user_argc: u64,
+    /// User argv passed to entry point.
+    pub user_argv: u64,
 }
 
 impl Process {
@@ -86,31 +118,23 @@ impl Process {
 
         let mut proc = Box::new(Self {
             pid,
+            parent_pid: None,
             name: String::from(name),
             state: ProcessState::Ready,
             pml4_frame,
             allocated_frames: Vec::new(),
             fd_table: vec![
-                Some(ProcessFileDesc {
-                    path: String::from("/dev/stdin"),
-                    offset: 0,
-                    writable: false,
-                }), // fd 0 = stdin
-                Some(ProcessFileDesc {
-                    path: String::from("/dev/stdout"),
-                    offset: 0,
-                    writable: true,
-                }), // fd 1 = stdout
-                Some(ProcessFileDesc {
-                    path: String::from("/dev/stderr"),
-                    offset: 0,
-                    writable: true,
-                }), // fd 2 = stderr
+                Some(ProcessFileDesc { kind: FdKind::Stdin }),  // fd 0 = stdin
+                Some(ProcessFileDesc { kind: FdKind::Stdout }), // fd 1 = stdout
+                Some(ProcessFileDesc { kind: FdKind::Stderr }), // fd 2 = stderr
             ],
+            cwd: String::from("/"),
             mmap_next: 0x0000_0000_1000_0000,
             exit_code: 0,
             user_rip: user_entry,
             user_rsp: 0x0000_0000_7FFF_0000,
+            user_argc: 0,
+            user_argv: 0,
         });
 
         // Map initial 16 KiB user stack at top of user 2GB space (0x7FFE_C000..0x7FFF_0000)
@@ -221,7 +245,34 @@ impl Process {
             l4_entry.set_unused();
         }
 
-        // 3. Free the PML4 table itself
+        // 3. Close open file descriptors and release pipe references
+        for desc_opt in self.fd_table.drain(..) {
+            if let Some(desc) = desc_opt {
+                match desc.kind {
+                    FdKind::PipeRead { pipe_id } => {
+                        let mut pipes = PIPES.lock();
+                        if let Some(Some(pipe)) = pipes.get_mut(pipe_id) {
+                            pipe.reader_count = pipe.reader_count.saturating_sub(1);
+                            if pipe.reader_count == 0 && pipe.writer_count == 0 {
+                                pipes[pipe_id] = None;
+                            }
+                        }
+                    }
+                    FdKind::PipeWrite { pipe_id } => {
+                        let mut pipes = PIPES.lock();
+                        if let Some(Some(pipe)) = pipes.get_mut(pipe_id) {
+                            pipe.writer_count = pipe.writer_count.saturating_sub(1);
+                            if pipe.reader_count == 0 && pipe.writer_count == 0 {
+                                pipes[pipe_id] = None;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // 4. Free the PML4 table itself
         bitmap::free_frame(self.pml4_frame);
         self.state = ProcessState::Dead;
     }
@@ -427,7 +478,7 @@ pub fn validate_user_buffer(
 
 /// Execution trampoline to jump into Ring 3 user mode.
 pub extern "C" fn run_process_ring3(pid: u64) {
-    let (entry, stack, pml4) = {
+    let (entry, stack, argc, argv, pml4) = {
         let mut table = PROCESS_TABLE.lock();
         let proc = match table.iter_mut().find(|p| p.pid == pid) {
             Some(p) => p,
@@ -435,58 +486,162 @@ pub extern "C" fn run_process_ring3(pid: u64) {
         };
         proc.state = ProcessState::Running;
         set_current_pid(pid);
-        (proc.user_rip, proc.user_rsp, proc.pml4_frame)
+        (proc.user_rip, proc.user_rsp, proc.user_argc, proc.user_argv, proc.pml4_frame)
     };
 
     serial_println!(
-        "[ring3  ] jumping to Ring 3 userspace: PID #{pid}, entry={entry:#x}, stack={stack:#x}, CR3={:#x}",
+        "[ring3  ] jumping to Ring 3 userspace: PID #{pid}, entry={entry:#x}, stack={stack:#x}, argc={argc}, argv={argv:#x}, CR3={:#x}",
         pml4.start_address().as_u64()
     );
+
+    let kstack_top = {
+        let lock = crate::sched::SCHEDULER.lock();
+        lock.as_ref()
+            .and_then(|s| s.current.kstack.as_ref().map(|k| k.stack_top.as_u64()))
+            .unwrap_or_else(|| crate::gdt::kernel_rsp0_stack_top())
+    };
+    crate::syscall::set_kernel_syscall_rsp(kstack_top);
 
     // Switch to the process's isolated PML4 table
     unsafe {
         Cr3::write(pml4, x86_64::registers::control::Cr3Flags::empty());
-    }
-
-    // Switch to Ring 3 via iretq
-    unsafe {
-        enter_user_mode(entry, stack);
+        enter_user_mode(entry, stack, argc, argv);
     }
 }
 
 /// Low-level assembly function to switch CPL 0 -> CPL 3 via `iretq`.
 #[unsafe(naked)]
-pub unsafe extern "C" fn enter_user_mode(entry: u64, stack: u64) -> ! {
+pub unsafe extern "C" fn enter_user_mode(entry: u64, stack: u64, argc: u64, argv: u64) -> ! {
     core::arch::naked_asm!(
         // RDI = entry (user RIP)
         // RSI = stack (user RSP)
-        // User selectors:
-        // GDT index 3 = user_data (0x18 | 3 = 0x1B)
-        // GDT index 4 = user_code (0x20 | 3 = 0x23)
+        // RDX = argc
+        // RCX = argv
         "mov ax, 0x1B",
         "mov ds, ax",
         "mov es, ax",
         "mov fs, ax",
         "mov gs, ax",
 
-        // Build iretq frame on the current stack:
+        // Build iretq frame on current stack:
         // SS, RSP, RFLAGS, CS, RIP
         "push 0x1B",         // SS (User Data RPL 3)
         "push rsi",          // RSP (User stack)
         "push 0x202",        // RFLAGS (IF=1)
         "push 0x23",         // CS (User Code RPL 3)
         "push rdi",          // RIP (User entry point)
+
+        // Set SysV ABI registers for user entry point:
+        // RDI = argc
+        // RSI = argv
+        "mov rdi, rdx",
+        "mov rsi, rcx",
+        "xor edx, edx",
+        "xor ecx, ecx",
+        "xor r8d, r8d",
+        "xor r9d, r9d",
+        "xor r10d, r10d",
+        "xor r11d, r11d",
         "iretq"
     );
 }
 
-static RUN_PID: AtomicU64 = AtomicU64::new(0);
-
-extern "C" fn user_process_entry() {
-    let pid = RUN_PID.load(Ordering::SeqCst);
+extern "C" fn user_process_entry(pid_arg: usize) {
+    let pid = pid_arg as u64;
     if pid != 0 {
         run_process_ring3(pid);
     }
+}
+
+/// Spawns a new user process from raw ELF binary bytes with string arguments and parent tracking.
+pub fn spawn_process_with_args(
+    path: &str,
+    elf_bytes: &[u8],
+    args: &[String],
+    parent_pid: Option<ProcessId>,
+) -> Result<ProcessId, &'static str> {
+    let hdr = crate::fs::elf::parse_header(elf_bytes).map_err(|_| "invalid ELF binary")?;
+    let mut proc = Process::new(path, hdr.entry_point)?;
+    proc.parent_pid = parent_pid;
+
+    // Inherit cwd and non-standard file descriptors from parent if present
+    if let Some(ppid) = parent_pid {
+        let table = PROCESS_TABLE.lock();
+        if let Some(parent) = table.iter().find(|p| p.pid == ppid) {
+            proc.cwd = parent.cwd.clone();
+            for (idx, fd_opt) in parent.fd_table.iter().enumerate() {
+                if idx < proc.fd_table.len() {
+                    proc.fd_table[idx] = fd_opt.clone();
+                } else if let Some(fd) = fd_opt {
+                    while proc.fd_table.len() < idx {
+                        proc.fd_table.push(None);
+                    }
+                    proc.fd_table.push(Some(fd.clone()));
+                }
+            }
+        }
+    }
+
+    crate::fs::elf::load_elf_into_process(elf_bytes, &mut proc)
+        .map_err(|_| "failed to load ELF segments into process PML4")?;
+
+    let phys_offset = crate::memory::get_phys_offset().ok_or("phys offset missing")?;
+
+    // The top stack frame (0x7FFE_F000..0x7FFF_0000) is the 4th frame in allocated_frames
+    let top_frame = proc.allocated_frames[3];
+    let top_frame_virt = phys_offset + top_frame.start_address().as_u64();
+    let top_frame_ptr = top_frame_virt.as_mut_ptr::<u8>();
+
+    let mut curr_offset = 4096usize;
+    let mut arg_ptrs_virt = Vec::new();
+
+    // Copy argument strings into top of user stack frame
+    for arg in args {
+        let bytes = arg.as_bytes();
+        let needed = bytes.len() + 1;
+        if curr_offset < needed + 256 {
+            break;
+        }
+        curr_offset -= needed;
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), top_frame_ptr.add(curr_offset), bytes.len());
+            *top_frame_ptr.add(curr_offset + bytes.len()) = 0;
+        }
+        let user_str_vaddr = 0x0000_0000_7FFE_F000u64 + curr_offset as u64;
+        arg_ptrs_virt.push(user_str_vaddr);
+    }
+
+    // Align down to 8 bytes for pointer array
+    curr_offset &= !7;
+
+    // Push null pointer (argv[argc] = NULL)
+    curr_offset -= 8;
+    unsafe {
+        *(top_frame_ptr.add(curr_offset) as *mut u64) = 0;
+    }
+
+    // Push argv pointers in reverse order so argv[0] is at lowest address
+    for &ptr_virt in arg_ptrs_virt.iter().rev() {
+        curr_offset -= 8;
+        unsafe {
+            *(top_frame_ptr.add(curr_offset) as *mut u64) = ptr_virt;
+        }
+    }
+
+    let argv_user_addr = 0x0000_0000_7FFE_F000u64 + curr_offset as u64;
+
+    // Align user stack pointer down to 16 bytes (SysV ABI constraint)
+    curr_offset &= !15;
+    let user_rsp = 0x0000_0000_7FFE_F000u64 + curr_offset as u64;
+
+    proc.user_rsp = user_rsp;
+    proc.user_argc = arg_ptrs_virt.len() as u64;
+    proc.user_argv = argv_user_addr;
+
+    let pid = register_process(proc);
+    let _tid = crate::sched::spawn_process_thread(path, user_process_entry, pid);
+
+    Ok(pid)
 }
 
 /// Spawns a new user process from raw ELF binary bytes.
@@ -494,12 +649,7 @@ pub fn spawn_process(
     name: &str,
     elf_bytes: &[u8],
 ) -> Result<(ProcessId, crate::sched::ThreadId), &'static str> {
-    let hdr = crate::fs::elf::parse_header(elf_bytes).map_err(|_| "invalid ELF binary")?;
-    let mut proc = Process::new(name, hdr.entry_point)?;
-    crate::fs::elf::load_elf_into_process(elf_bytes, &mut proc)
-        .map_err(|_| "failed to load ELF segments into process PML4")?;
-    let pid = register_process(proc);
-    RUN_PID.store(pid, Ordering::SeqCst);
-    let tid = crate::sched::spawn(name, user_process_entry);
-    Ok((pid, tid))
+    let arg = String::from(name);
+    let pid = spawn_process_with_args(name, elf_bytes, &[arg], None)?;
+    Ok((pid, 0))
 }

@@ -56,7 +56,8 @@ pub unsafe extern "C" fn switch_context(prev_rsp: *mut usize, next_rsp: usize) {
 pub unsafe extern "C" fn thread_trampoline() -> ! {
     naked_asm!(
         // On entry from switch_context:
-        // Call the entry function pointer stored in r12
+        // Pass argument in r13 to entry function in r12 (rdi is 1st argument in SysV ABI)
+        "mov rdi, r13",
         "call r12",
 
         // If thread entry function returns, call thread_exit

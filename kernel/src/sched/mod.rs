@@ -104,6 +104,16 @@ pub fn spawn(name: &str, entry: extern "C" fn()) -> ThreadId {
     })
 }
 
+/// Spawns a new kernel thread passing an argument in RDI.
+pub fn spawn_with_arg(name: &str, entry: extern "C" fn(usize), arg: usize) -> ThreadId {
+    interrupts::without_interrupts(|| {
+        let mut lock = SCHEDULER.lock();
+        let sched = lock.as_mut().expect("scheduler not initialized");
+        let t = Thread::new_with_arg(name, entry, arg);
+        sched.spawn(t)
+    })
+}
+
 /// Spawns a new thread executing a loaded ELF binary with a backing image buffer.
 #[allow(dead_code)]
 pub fn spawn_elf(name: &str, entry_addr: usize, image: Vec<u8>) -> ThreadId {
@@ -111,6 +121,16 @@ pub fn spawn_elf(name: &str, entry_addr: usize, image: Vec<u8>) -> ThreadId {
         let mut lock = SCHEDULER.lock();
         let sched = lock.as_mut().expect("scheduler not initialized");
         let t = Thread::new_with_image(name, entry_addr, image);
+        sched.spawn(t)
+    })
+}
+
+/// Spawns a dedicated thread for a user process with PID tracking.
+pub fn spawn_process_thread(name: &str, entry: extern "C" fn(usize), pid: u64) -> ThreadId {
+    interrupts::without_interrupts(|| {
+        let mut lock = SCHEDULER.lock();
+        let sched = lock.as_mut().expect("scheduler not initialized");
+        let t = Thread::new_process_thread(name, entry, pid);
         sched.spawn(t)
     })
 }
@@ -219,6 +239,32 @@ fn switch(exit_current: bool, sleep_until: Option<u64>) {
         // Set next thread state
         sched.current.state = ThreadState::Running;
         next_rsp = sched.current.rsp;
+        let target_pid = sched.current.pid;
+        set_current_pid(target_pid);
+
+        if target_pid == 0 {
+            restore_kernel_pml4();
+        } else {
+            let table = crate::sched::process::PROCESS_TABLE.lock();
+            if let Some(p) = table.iter().find(|proc| proc.pid == target_pid) {
+                let frame = p.pml4_frame;
+                drop(table);
+                unsafe {
+                    let cur_cr3 = x86_64::registers::control::Cr3::read().0;
+                    if cur_cr3 != frame {
+                        x86_64::registers::control::Cr3::write(frame, x86_64::registers::control::Cr3Flags::empty());
+                    }
+                }
+            }
+        }
+
+        let kstack_top = sched
+            .current
+            .kstack
+            .as_ref()
+            .map(|k| k.stack_top.as_u64())
+            .unwrap_or_else(|| crate::gdt::kernel_rsp0_stack_top());
+        crate::syscall::set_kernel_syscall_rsp(kstack_top);
     });
 
     if !prev_rsp_ptr.is_null() && next_rsp != 0 {

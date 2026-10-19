@@ -277,6 +277,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "libtrios"
+version = "0.1.0"
+
+[[package]]
 name = "linked_list_allocator"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -510,6 +514,13 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "user"
+version = "0.1.0"
+dependencies = [
+ "libtrios",
+]
 
 [[package]]
 name = "uuid"

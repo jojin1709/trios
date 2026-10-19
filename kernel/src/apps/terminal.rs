@@ -86,6 +86,8 @@ pub struct Terminal {
     history: Vec<String>,
     history_idx: Option<usize>,
     scroll_offset: usize,
+    /// Whether keystrokes are currently routed directly to the user-mode shell (/bin/sh).
+    pub sh_mode: bool,
 }
 
 impl Terminal {
@@ -117,6 +119,7 @@ impl Terminal {
             history: Vec::new(),
             history_idx: None,
             scroll_offset: 0,
+            sh_mode: false,
         };
         this.push(String::from("TriOS Terminal v1.0 [x86_64]"));
         this.push(String::from("Logged in as jojin. Type 'help' for commands."));
@@ -185,6 +188,31 @@ impl Terminal {
             return false;
         }
 
+        if self.sh_mode {
+            let raw = wm.text_value(self.win, TERM_INPUT).unwrap_or_default();
+            let command = raw.trim();
+            set_field(wm, self.win, TERM_INPUT, "");
+            if command == "exit" {
+                self.sh_mode = false;
+                self.push(String::from("exit"));
+                self.push(String::from("[terminal] returned to internal terminal."));
+                self.refresh(wm);
+                return true;
+            }
+            // Send command + '\n' to SHELL_PTY
+            {
+                let mut pty = crate::sched::process::SHELL_PTY.lock();
+                for &b in command.as_bytes() {
+                    pty.input_queue.push_back(b);
+                }
+                pty.input_queue.push_back(b'\n');
+            }
+            crate::sched::yield_now();
+            self.drain_pty();
+            self.refresh(wm);
+            return true;
+        }
+
         let raw = wm.text_value(self.win, TERM_INPUT).unwrap_or_default();
         let command = raw.trim();
         if command.is_empty() {
@@ -197,6 +225,29 @@ impl Terminal {
             self.history.push(String::from(command));
         }
         serial_println!("[apps  ] term: {command}");
+
+        if command == "sh" {
+            self.sh_mode = true;
+            self.push(format!("jojin@trios:/$ {command}"));
+            self.push(String::from("[terminal] switched to user-mode shell (/bin/sh)."));
+            self.push(String::from("[terminal] forwarding stdin/stdout to Ring 3 process. Type 'exit' to return."));
+            self.drain_pty();
+            self.refresh(wm);
+            return true;
+        } else if let Some(cmd_rest) = command.strip_prefix("sh ") {
+            self.push(format!("jojin@trios:/$ {command}"));
+            {
+                let mut pty = crate::sched::process::SHELL_PTY.lock();
+                for &b in cmd_rest.as_bytes() {
+                    pty.input_queue.push_back(b);
+                }
+                pty.input_queue.push_back(b'\n');
+            }
+            crate::sched::yield_now();
+            self.drain_pty();
+            self.refresh(wm);
+            return true;
+        }
 
         self.push(format!("jojin@trios:/$ {command}"));
         if command == "clear" {
@@ -871,7 +922,7 @@ impl Terminal {
     /// Repaints the [`TERM_LINE_COUNT`] transcript rows from the tail of
     /// [`Self::scrollback`]: newest at the bottom, older lines scrolling
     /// off the top, short transcripts leaving blank rows above.
-    fn refresh(&self, wm: &mut WindowManager) {
+    pub fn refresh(&self, wm: &mut WindowManager) {
         let total = self.scrollback.len();
         let end = total.saturating_sub(self.scroll_offset);
         let start = end.saturating_sub(TERM_LINE_COUNT);
@@ -885,6 +936,21 @@ impl Terminal {
                 String::new()
             };
             wm.set_label(self.win, TERM_LINES + i, text);
+        }
+    }
+
+    /// Drains any pending output from the userland shell PTY queue into the terminal transcript.
+    pub fn drain_pty(&mut self) {
+        let mut pty = crate::sched::process::SHELL_PTY.lock();
+        let mut out_bytes = Vec::new();
+        while let Some(b) = pty.output_queue.pop_front() {
+            out_bytes.push(b);
+        }
+        drop(pty);
+        if let Ok(s) = core::str::from_utf8(&out_bytes) {
+            for line in s.lines() {
+                self.push(String::from(line));
+            }
         }
     }
 }

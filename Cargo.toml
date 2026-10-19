@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel"]
+members = ["kernel", "libtrios", "user"]
 default-members = ["."]
 
 # Root package: builds the bootable UEFI disk image from the kernel artifact.

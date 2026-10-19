@@ -13,6 +13,7 @@ use alloc::{vec, vec::Vec};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ElfHeader64 {
+    pub e_type: u16,
     pub entry_point: u64,
     pub ph_offset: u64,
     pub ph_entry_size: u16,
@@ -89,6 +90,7 @@ pub fn parse_header(bytes: &[u8]) -> Result<ElfHeader64, ElfError> {
     let ph_num = u16::from_le_bytes([bytes[56], bytes[57]]);
 
     Ok(ElfHeader64 {
+        e_type,
         entry_point,
         ph_offset,
         ph_entry_size,
@@ -438,40 +440,61 @@ pub fn load_elf_into_process(
     let hdr = parse_header(bytes)?;
     let phys_offset = crate::memory::get_phys_offset().ok_or(ElfError::NoLoadableSegments)?;
 
+    let base_vaddr: u64 = if hdr.e_type == 3 || hdr.entry_point < 0x0040_0000 {
+        0x0040_0000
+    } else {
+        0
+    };
+
+    let mut mapped_pages: alloc::vec::Vec<(u64, x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>)> = alloc::vec::Vec::new();
+
     for i in 0..hdr.ph_num {
         if let Some(ph) = parse_program_header(bytes, &hdr, i) {
             if ph.p_type == PT_LOAD && ph.p_memsz > 0 {
-                let start_v = ph.p_vaddr & !0xFFF;
-                let end_v = (ph.p_vaddr + ph.p_memsz + 0xFFF) & !0xFFF;
+                let seg_vaddr = base_vaddr + ph.p_vaddr;
+                let start_v = seg_vaddr & !0xFFF;
+                let end_v = (seg_vaddr + ph.p_memsz + 0xFFF) & !0xFFF;
                 let page_count = ((end_v - start_v) / 4096) as usize;
 
                 for page_idx in 0..page_count {
                     let page_virt = x86_64::VirtAddr::new(start_v + (page_idx as u64 * 4096));
-                    let frame = crate::memory::bitmap::alloc_frame()
-                        .ok_or(ElfError::NoLoadableSegments)?;
+                    let page_u64 = page_virt.as_u64();
 
-                    crate::sched::process::map_in_pml4(
-                        proc.pml4_frame,
-                        page_virt,
-                        frame,
-                        crate::memory::virt::PageFlags::USER_CODE,
-                    )
-                    .map_err(|_| ElfError::NoLoadableSegments)?;
+                    let frame = if let Some(&(_, f)) = mapped_pages.iter().find(|(v, _)| *v == page_u64) {
+                        f
+                    } else {
+                        let f = crate::memory::bitmap::alloc_frame()
+                            .ok_or(ElfError::NoLoadableSegments)?;
 
-                    proc.allocated_frames.push(frame);
+                        crate::sched::process::map_in_pml4(
+                            proc.pml4_frame,
+                            page_virt,
+                            f,
+                            crate::memory::virt::PageFlags::USER_CODE,
+                        )
+                        .map_err(|_| ElfError::NoLoadableSegments)?;
 
-                    // Zero frame first
+                        proc.allocated_frames.push(f);
+                        mapped_pages.push((page_u64, f));
+
+                        // Zero new frame
+                        unsafe {
+                            let frame_ptr = (phys_offset + f.start_address().as_u64()).as_mut_ptr::<u8>();
+                            core::ptr::write_bytes(frame_ptr, 0, 4096);
+                        }
+
+                        f
+                    };
+
                     unsafe {
-                        let frame_ptr = (phys_offset + frame.start_address().as_u64())
-                            .as_mut_ptr::<u8>();
-                        core::ptr::write_bytes(frame_ptr, 0, 4096);
+                        let frame_ptr = (phys_offset + frame.start_address().as_u64()).as_mut_ptr::<u8>();
 
                         // Copy segment data intersecting this 4 KiB page
                         let page_start = page_virt.as_u64();
                         let page_end = page_start + 4096;
 
-                        let seg_start = ph.p_vaddr;
-                        let seg_data_end = ph.p_vaddr + ph.p_filesz;
+                        let seg_start = seg_vaddr;
+                        let seg_data_end = seg_vaddr + ph.p_filesz;
 
                         let copy_start = seg_start.max(page_start);
                         let copy_end = seg_data_end.min(page_end);
@@ -496,5 +519,7 @@ pub fn load_elf_into_process(
         }
     }
 
-    Ok(hdr.entry_point)
+    let final_entry = base_vaddr + hdr.entry_point;
+    proc.user_rip = final_entry;
+    Ok(final_entry)
 }

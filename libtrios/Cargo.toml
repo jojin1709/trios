@@ -1,0 +1,7 @@
+[package]
+name = "libtrios"
+version = "0.1.0"
+edition = "2024"
+description = "TriOS Userland System SDK and Runtime"
+
+[dependencies]
